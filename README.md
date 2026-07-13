@@ -11,9 +11,5 @@ This will be accomplished by
 
 This will all be done through Python and a bit of Bash and all be wrapped up in a simple Bash executable.
 
-
-<<<<<<< HEAD
 **Note:** I wish I could say I am, but I am not fluent in programming. I'm a hardware guy, so a lot of this was programmed as a base, then I had AI go over it and clean it up and fix anything wrong. That being said AI was used to make this.
-=======
-**Note:** I wish I could say I am, but I am not fluent in programming. I'm a hardware guy, so while a lot of this was written by me, it was mostly building ontop of a framework generated with AI. 
->>>>>>> c7872c750f02909a1a1df4a7628edd7997b87ee9
+
