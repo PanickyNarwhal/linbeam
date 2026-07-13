@@ -10,3 +10,6 @@ This will be accomplished by
 * Desktop Launcher for KDE
 
 This will all be done through Python and a bit of Bash and all be wrapped up in a simple Bash executable.
+
+
+**Note:** I wish I could say I am, but I am not fluent in programming. I'm a hardware guy, so while a lot of this was written by me, it was mostly building ontop of a framework generated with AI. 
