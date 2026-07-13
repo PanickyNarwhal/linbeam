@@ -8,4 +8,5 @@ This will be accomplished by
 * A Winetricks Payload
 * Wine-Wrapped MSI Installer
 * Desktop Launcher for KDE
+
 This will all be done through Python and a bit of Bash and all be wrapped up in a simple Bash executable.
