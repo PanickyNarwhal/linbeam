@@ -24,7 +24,7 @@ def generate_desktop_shortcut(env):
 
     desktop_entry = f"""[Desktop Entry]
 Name=Bluebeam Revu 21
-Comment=PDF Markup and Editing
+Comment=Takeoff and PDF Markup Software
 Exec=env WINEPREFIX=\"{prefix}\" WINEARCH=\"win64\" wine \"{exe_path}\"
 Type=Application
 Categories=Office;
