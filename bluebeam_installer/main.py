@@ -3,9 +3,12 @@ import os
 import stat
 import sys
 
-import installer
-import system_checks
-import wine_manager
+try:
+    from . import installer, system_checks, wine_manager
+except ImportError:  # pragma: no cover - supports direct script execution
+    import installer
+    import system_checks
+    import wine_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
