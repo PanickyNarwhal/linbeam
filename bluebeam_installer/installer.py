@@ -45,35 +45,64 @@ def execute_msi(msi_path, env, properties=""):
     if not os.path.exists(msi_path):
         logging.critical("CRITICAL: MSI payload not found at %s", msi_path)
         return False
-        
-    file_name = os.path.basename(msi_path)
-    work_dir = os.path.dirname(msi_path)
-    
-    logging.info("Starting Wine installation for %s...", file_name)
-    
-    # Execute directly in the payload directory to bypass absolute path translation bugs
-    cmd = ["wine", "msiexec", "/i", file_name, "/qn", "/norestart"]
-    if properties:
-        cmd.extend(properties.split())
-    
+
+    prefix = env.get("WINEPREFIX")
+    if not prefix:
+        logging.critical("CRITICAL: WINEPREFIX missing in environment.")
+        return False
+
+    original_name = os.path.basename(msi_path)
+    safe_name = original_name.replace(" ", "_")
+    wine_c_drive = os.path.join(prefix, "drive_c")
+    stage_dir = os.path.join(wine_c_drive, "linbeam_temp")
+    os.makedirs(stage_dir, exist_ok=True)
+
+    staged_msi_path = os.path.join(stage_dir, safe_name)
+    logging.info("Staging payload into Wine C: drive as %s...", safe_name)
+
     try:
-        subprocess.run(
-            cmd, 
-            env=env, 
-            cwd=work_dir, 
-            check=True, 
-            stdout=subprocess.DEVNULL
+        shutil.copy2(msi_path, staged_msi_path)
+    except Exception as e:
+        logging.critical("CRITICAL: Failed to stage payload in Wine prefix: %s", e)
+        return False
+
+    wine_executable = get_wine_executable()
+    if wine_executable is None:
+        return False
+
+    wine_msi_path = to_wine_path(staged_msi_path, env)
+    cmd = [wine_executable, "msiexec", "/i", wine_msi_path, "/qn", "/norestart"]
+    if properties:
+        cmd.extend(shlex.split(properties))
+
+    try:
+        logging.info("Executing msiexec...")
+        result = subprocess.run(
+            cmd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        logging.info("Success: %s installed.", file_name)
+        logging.info("Success: %s installed.", original_name)
+        if result.stdout:
+            logging.debug("msiexec stdout: %s", result.stdout.strip())
         return True
     except subprocess.CalledProcessError as e:
         if e.returncode == 3010:
-            logging.info("Success: %s installed (ignoring pending Windows reboot).", file_name)
+            logging.info("Success: %s installed (ignoring pending Windows reboot).", original_name)
             return True
-        else:
-            logging.critical("CRITICAL: Installation failed for %s with exit code: %s", file_name, e.returncode)
-            return False
 
+        if e.stdout:
+            logging.error("msiexec output: %s", e.stdout.strip())
+        if e.stderr:
+            logging.error("msiexec error: %s", e.stderr.strip())
+
+        logging.critical("CRITICAL: Installation failed for %s with exit code: %s", original_name, e.returncode)
+        return False
+    finally:
+        if os.path.exists(staged_msi_path):
+            os.remove(staged_msi_path)
 
 def deploy_bluebeam_suite(env, payload_dir="payloads"):
     abs_payload_dir = os.path.abspath(payload_dir)
@@ -135,12 +164,26 @@ def inject_custom_assets(env, assets_dir="assets", profile_name="GilmoreHomesSta
 
     if profile_staged_path:
         logging.info("Registering %s as the active profile.", profile_name)
-        cmd = f'wine "{windows_exe_path}" /s /bpximport:"{profile_staged_path}" /bpxactive:{profile_name}'
+        wine_executable = get_wine_executable()
+        if wine_executable is None:
+            return False
+
+        cmd = [
+            wine_executable,
+            windows_exe_path,
+            "/s",
+            f"/bpximport:{profile_staged_path}",
+            f"/bpxactive:{profile_name}",
+        ]
 
         try:
-            subprocess.run(cmd, shell=True, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
             logging.info("The profile was registered.")
         except subprocess.CalledProcessError as exc:
+            if exc.stdout:
+                logging.error("Profile registration output: %s", exc.stdout.strip())
+            if exc.stderr:
+                logging.error("Profile registration error: %s", exc.stderr.strip())
             logging.error("The profile registration failed with exit code %s", exc.returncode)
 
     return True
