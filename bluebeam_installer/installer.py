@@ -47,16 +47,23 @@ def execute_msi(msi_path, env, properties=""):
         return False
         
     file_name = os.path.basename(msi_path)
+    work_dir = os.path.dirname(msi_path)
+    
     logging.info("Starting Wine installation for %s...", file_name)
     
-    wine_path = f"Z:{msi_path.replace('/', '\\')}"
-    
-    cmd = ["wine", "msiexec", "/i", wine_path, "/qn", "/norestart"]
+    # Execute directly in the payload directory to bypass absolute path translation bugs
+    cmd = ["wine", "msiexec", "/i", file_name, "/qn", "/norestart"]
     if properties:
         cmd.extend(properties.split())
     
     try:
-        subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            cmd, 
+            env=env, 
+            cwd=work_dir, 
+            check=True, 
+            stdout=subprocess.DEVNULL
+        )
         logging.info("Success: %s installed.", file_name)
         return True
     except subprocess.CalledProcessError as e:
