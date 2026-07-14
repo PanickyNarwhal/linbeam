@@ -1,10 +1,32 @@
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def to_wine_path(path, env=None):
+    if not path:
+        return path
+
+    if shutil.which("winepath") is None:
+        return path
+
+    try:
+        result = subprocess.run(
+            ["winepath", "-w", path],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env if env is not None else os.environ.copy(),
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return path
+
+    return result.stdout.strip() or path
 
 
 def execute_msi(msi_path, env, properties=""):
@@ -15,16 +37,24 @@ def execute_msi(msi_path, env, properties=""):
     file_name = os.path.basename(msi_path)
     logging.info("Starting the install for %s", file_name)
 
-    cmd = f'wine msiexec /i "{msi_path}" /qn /norestart {properties}'
+    wine_msi_path = to_wine_path(msi_path, env)
+    command = ["wine", "msiexec", "/i", wine_msi_path, "/qn", "/norestart"]
+    if properties:
+        command.extend(shlex.split(properties))
 
     try:
-        subprocess.run(cmd, shell=True, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(command, env=env, check=True, capture_output=True, text=True)
         logging.info("That one finished. %s is installed.", file_name)
         return True
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 3010:
             logging.info("That one finished, but Windows may want a reboot later.")
             return True
+
+        if exc.stdout:
+            logging.error("Wine output: %s", exc.stdout.strip())
+        if exc.stderr:
+            logging.error("Wine error: %s", exc.stderr.strip())
 
         logging.critical("The install for %s failed with exit code %s", file_name, exc.returncode)
         return False

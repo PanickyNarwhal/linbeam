@@ -5,11 +5,14 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 REQUIRED_BINARIES = [
-    "wine",
-    "wine64",
     "winetricks",
     "cabextract",
 ]
+
+WINE_BINARIES = (
+    "wine",
+    "wine64",
+)
 
 
 def detect_package_manager():
@@ -22,6 +25,9 @@ def detect_package_manager():
 
 def check_dependencies():
     missing = []
+    if not any(shutil.which(binary) is not None for binary in WINE_BINARIES):
+        missing.append("wine")
+
     for binary in REQUIRED_BINARIES:
         if shutil.which(binary) is None:
             missing.append(binary)
