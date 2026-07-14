@@ -37,10 +37,9 @@ class InstallerTests(unittest.TestCase):
         msi_path = "/tmp/Bluebeam Revu x64 21.msi"
         safe_name = "Bluebeam_Revu_x64_21.msi"
         staged_msi_path = os.path.join(env["WINEPREFIX"], "drive_c", "linbeam_temp", safe_name)
-        wine_path = r"C:\\linbeam_temp\\Bluebeam_Revu_x64_21.msi"
+        wine_path = r"C:\linbeam_temp\Bluebeam_Revu_x64_21.msi"
 
         with patch("bluebeam_installer.installer.get_wine_executable", return_value="wine64") as get_wine_executable, \
-             patch("bluebeam_installer.installer.to_wine_path", return_value=wine_path) as to_wine_path, \
              patch("bluebeam_installer.installer.shutil.copy2") as copy2, \
              patch("bluebeam_installer.installer.os.makedirs") as makedirs, \
              patch("bluebeam_installer.installer.os.path.exists", return_value=True) as exists, \

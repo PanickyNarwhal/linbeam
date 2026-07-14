@@ -70,7 +70,7 @@ def execute_msi(msi_path, env, properties=""):
     if wine_executable is None:
         return False
 
-    wine_msi_path = to_wine_path(staged_msi_path, env)
+    wine_msi_path = f"C:\\linbeam_temp\\{safe_name}"
     cmd = [wine_executable, "msiexec", "/i", wine_msi_path, "/qn", "/norestart"]
     if properties:
         cmd.extend(shlex.split(properties))
