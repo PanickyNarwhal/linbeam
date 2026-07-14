@@ -7,6 +7,18 @@ import sys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+WINE_EXECUTABLES = ("wine64", "wine")
+
+
+def get_wine_executable():
+    for binary in WINE_EXECUTABLES:
+        if shutil.which(binary):
+            logging.info("Using %s for Wine commands.", binary)
+            return binary
+
+    logging.critical("I could not find a Wine executable on the path.")
+    return None
+
 
 def to_wine_path(path, env=None):
     if not path:
@@ -31,33 +43,29 @@ def to_wine_path(path, env=None):
 
 def execute_msi(msi_path, env, properties=""):
     if not os.path.exists(msi_path):
-        logging.critical("I could not find the MSI file at %s", msi_path)
+        logging.critical("CRITICAL: MSI payload not found at %s", msi_path)
         return False
-
+        
     file_name = os.path.basename(msi_path)
-    logging.info("Starting the install for %s", file_name)
-
-    wine_msi_path = to_wine_path(msi_path, env)
-    command = ["wine", "msiexec", "/i", wine_msi_path, "/qn", "/norestart"]
+    logging.info("Starting Wine installation for %s...", file_name)
+    
+    wine_path = f"Z:{msi_path.replace('/', '\\')}"
+    
+    cmd = ["wine", "msiexec", "/i", wine_path, "/qn", "/norestart"]
     if properties:
-        command.extend(shlex.split(properties))
-
+        cmd.extend(properties.split())
+    
     try:
-        subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-        logging.info("That one finished. %s is installed.", file_name)
+        subprocess.run(cmd, env=env, check=True, stdout=subprocess.DEVNULL)
+        logging.info("Success: %s installed.", file_name)
         return True
-    except subprocess.CalledProcessError as exc:
-        if exc.returncode == 3010:
-            logging.info("That one finished, but Windows may want a reboot later.")
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 3010:
+            logging.info("Success: %s installed (ignoring pending Windows reboot).", file_name)
             return True
-
-        if exc.stdout:
-            logging.error("Wine output: %s", exc.stdout.strip())
-        if exc.stderr:
-            logging.error("Wine error: %s", exc.stderr.strip())
-
-        logging.critical("The install for %s failed with exit code %s", file_name, exc.returncode)
-        return False
+        else:
+            logging.critical("CRITICAL: Installation failed for %s with exit code: %s", file_name, e.returncode)
+            return False
 
 
 def deploy_bluebeam_suite(env, payload_dir="payloads"):

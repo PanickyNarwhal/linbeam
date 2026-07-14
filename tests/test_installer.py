@@ -6,6 +6,12 @@ from bluebeam_installer import installer
 
 
 class InstallerTests(unittest.TestCase):
+    @patch("bluebeam_installer.installer.shutil.which")
+    def test_get_wine_executable_prefers_wine64(self, which):
+        which.side_effect = lambda arg: "/usr/bin/wine64" if arg == "wine64" else "/usr/bin/wine"
+
+        self.assertEqual(installer.get_wine_executable(), "wine64")
+
     @patch("bluebeam_installer.installer.shutil.which", return_value="/usr/bin/winepath")
     @patch("bluebeam_installer.installer.subprocess.run")
     def test_to_wine_path_uses_winepath_when_available(self, run, which):
