@@ -24,13 +24,19 @@ def generate_desktop_shortcut(env):
 
     desktop_file = os.path.join(shortcut_dir, "bluebeam-revu.desktop")
     exe_path = f"{prefix}/drive_c/Program Files/Bluebeam Software/Bluebeam Revu/21/Revu/Revu.exe"
+    webview_args = env.get(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--no-sandbox --disable-gpu",
+    )
 
     desktop_entry = f"""[Desktop Entry]
 Name=Bluebeam Revu 21
 Comment=Takeoff and PDF Markup Software
-Exec=env WINEPREFIX=\"{prefix}\" WINEARCH=\"win64\" wine \"{exe_path}\"
+Exec=env WINEPREFIX="{prefix}" WINEARCH="win64" WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="{webview_args}" wine "{exe_path}" %F
 Type=Application
-Categories=Office;
+Categories=Office;Graphics;Viewer;
+MimeType=application/pdf;
+StartupWMClass=revu.exe
 Terminal=false
 Icon=bluebeam-revu
 """

@@ -1,0 +1,38 @@
+# Bluebeam Payloads & Custom Assets
+payloads/*
+!payloads/.gitkeep
+assets/*
+!assets/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+
+# Local runtime and generated output
+converted-md/
+*.docx
+*.pdf
+*.log
+*.log.*
+*.tmp
+*.bak
+.env
+.env.local
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*~
+
+# Optional local tool artifacts
+pandoc.exe

@@ -14,6 +14,12 @@ WINE_BINARIES = (
     "wine64",
 )
 
+SEVENZIP_BINARIES = (
+    "7z",
+    "7za",
+    "7zz",
+)
+
 
 def detect_package_manager():
     for package_manager in ("apt", "dnf", "pacman", "zypper", "yum"):
@@ -21,6 +27,13 @@ def detect_package_manager():
             return package_manager
 
     return "unknown"
+
+
+def get_7z_executable():
+    for binary in SEVENZIP_BINARIES:
+        if shutil.which(binary):
+            return binary
+    return None
 
 
 def check_dependencies():
@@ -56,6 +69,10 @@ def run_system_flight_check():
 
     missing = check_dependencies()
     if not missing:
+        if get_7z_executable() is None:
+            logging.info(
+                "Optional host 7z binary not found; WebView2 extraction will fall back to Wine's bundled 7z.exe."
+            )
         logging.info("Looks good. All the host bits are there.")
         return True
 
