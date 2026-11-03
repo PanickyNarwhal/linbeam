@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import logging
 import os
 import shutil
@@ -7,6 +8,16 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 WEBVIEW2_ARGS = "--no-sandbox --disable-gpu"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_dir(dir_path):
+    if os.path.isdir(dir_path):
+        return os.path.abspath(dir_path)
+    repo_candidate = os.path.join(REPO_ROOT, dir_path)
+    if os.path.isdir(repo_candidate):
+        return repo_candidate
+    return os.path.abspath(dir_path)
 
 
 def get_wine_binary():
@@ -117,7 +128,8 @@ def configure_prefix_registry(env):
 
 def install_local_vc_redist(env, payload_dir="payloads"):
     prefix = env.get("WINEPREFIX")
-    if not prefix or not os.path.isdir(payload_dir):
+    resolved_payload_dir = _resolve_dir(payload_dir)
+    if not prefix or not os.path.isdir(resolved_payload_dir):
         return False
 
     wine_bin = get_wine_binary()
@@ -126,7 +138,7 @@ def install_local_vc_redist(env, payload_dir="payloads"):
 
     installed_x64 = False
     for exe_name in ("vc_redist.x86.exe", "vc_redist.x64.exe"):
-        src_path = os.path.join(payload_dir, exe_name)
+        src_path = os.path.join(resolved_payload_dir, exe_name)
         if not os.path.isfile(src_path):
             continue
 

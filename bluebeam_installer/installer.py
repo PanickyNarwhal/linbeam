@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import glob
 import logging
 import os
@@ -10,6 +11,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 WINE_EXECUTABLES = ("wine64", "wine")
 SEVENZIP_EXECUTABLES = ("7z", "7za", "7zz")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_dir(dir_path):
+    if os.path.isdir(dir_path):
+        return os.path.abspath(dir_path)
+    repo_candidate = os.path.join(REPO_ROOT, dir_path)
+    if os.path.isdir(repo_candidate):
+        return repo_candidate
+    return os.path.abspath(dir_path)
+
 
 VBS_MSI_PATCHER = r"""On Error Resume Next
 If WScript.Arguments.Count < 1 Then WScript.Quit 1
@@ -506,7 +518,7 @@ def finalize_bluebeam_admin_setup(env):
 
 
 def deploy_bluebeam_suite(env, payload_dir="payloads"):
-    abs_payload_dir = os.path.abspath(payload_dir)
+    abs_payload_dir = _resolve_dir(payload_dir)
     revu_msi = os.path.join(abs_payload_dir, "Bluebeam Revu x64 21.msi")
     ocr_msi = os.path.join(abs_payload_dir, "BluebeamOCR x64 21.msi")
     revu_properties = (
@@ -529,7 +541,8 @@ def deploy_bluebeam_suite(env, payload_dir="payloads"):
 
 
 def inject_custom_assets(env, assets_dir="assets", profile_name="GilmoreHomesStandard"):
-    if not os.path.exists(assets_dir):
+    resolved_assets_dir = _resolve_dir(assets_dir)
+    if not os.path.exists(resolved_assets_dir):
         logging.info("No custom assets folder was found, so I am skipping that part.")
         return True
 
@@ -555,8 +568,8 @@ def inject_custom_assets(env, assets_dir="assets", profile_name="GilmoreHomesSta
 
     profile_staged_path = None
 
-    for item in os.listdir(assets_dir):
-        source = os.path.join(assets_dir, item)
+    for item in os.listdir(resolved_assets_dir):
+        source = os.path.join(resolved_assets_dir, item)
         destination = os.path.join(wine_profile_dir, item)
 
         try:
@@ -605,5 +618,8 @@ def run_installation(env):
 
 
 if __name__ == "__main__":
-    logging.warning("This module is not meant to be run by itself.")
-    sys.exit(1)
+    try:
+        from . import main as _main_mod
+    except ImportError:
+        import main as _main_mod
+    sys.exit(_main_mod.main())
