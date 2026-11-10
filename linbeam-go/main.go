@@ -11,6 +11,7 @@ import (
 	"github.com/PanickyNarwhal/linbeam/pkg/desktop"
 	"github.com/PanickyNarwhal/linbeam/pkg/installer"
 	"github.com/PanickyNarwhal/linbeam/pkg/proton"
+	"github.com/PanickyNarwhal/linbeam/pkg/updater"
 )
 
 func main() {
@@ -22,7 +23,8 @@ func main() {
 
 	engine := proton.NewEngine(cfg)
 	bm := installer.NewBluebeamManager(cfg, engine)
-	app := NewAppServer(cfg, engine, bm)
+	upd := updater.NewManager(cfg, engine, bm)
+	app := NewAppServer(cfg, engine, bm, upd)
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -66,6 +68,28 @@ func main() {
 			customMsi = args[1]
 		}
 		runCLISetup(cfg, engine, bm, customMsi)
+
+	case "download":
+		_, err := bm.DownloadAndExtractDeploymentZip(func(stage string, pct int) {
+			fmt.Printf("\r[%3d%%] %-68s", pct, stage)
+		})
+		fmt.Println()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Download failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Official Bluebeam x64 MSI deployment package downloaded and unpacked.")
+
+	case "update":
+		updateMSI := len(args) > 1 && (args[1] == "--full" || args[1] == "--msi")
+		_, err := upd.UpdateAll(updateMSI, func(stage string, pct int) {
+			fmt.Printf("[%3d%%] %s\n", pct, stage)
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Update error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Linbeam launcher and all components updated.")
 
 	case "proton":
 		runCLIProton(cfg, engine)
@@ -166,7 +190,7 @@ func runCLISetup(cfg *config.Config, engine *proton.Engine, bm *installer.Bluebe
 		fmt.Printf("\n[1/3] Using Proton-GE runner: %s (%s)\n", active.Name, active.Path)
 	}
 
-	// 2. Discover or prompt for Bluebeam Revu 21 MSI
+	// 2. Discover or automatically download Bluebeam Revu 21 MSI from https://bluebeam.com/MSIdeployx64
 	payloads := cfg.DiscoverPayloads()
 	revuMsi := customRevuMsi
 	if revuMsi == "" {
@@ -174,16 +198,27 @@ func runCLISetup(cfg *config.Config, engine *proton.Engine, bm *installer.Bluebe
 	}
 
 	if revuMsi == "" {
-		fmt.Print("\nEnter path to 'Bluebeam Revu x64 21.msi': ")
-		input, _ := reader.ReadString('\n')
-		revuMsi = strings.Trim(strings.TrimSpace(input), `"'`)
+		fmt.Println("\n[2/3] Local Bluebeam MSI not found; downloading from https://bluebeam.com/MSIdeployx64...")
+		dlInfo, err := bm.DownloadAndExtractDeploymentZip(func(stage string, pct int) {
+			fmt.Printf("\r[%3d%%] %-68s", pct, stage)
+		})
+		fmt.Println()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to download Bluebeam deployment ZIP: %v\n", err)
+			fmt.Print("Enter path to 'Bluebeam Revu x64 21.msi': ")
+			input, _ := reader.ReadString('\n')
+			revuMsi = strings.Trim(strings.TrimSpace(input), `"'`)
+		} else {
+			payloads = *dlInfo
+			revuMsi = payloads.RevuMSI
+		}
 	} else {
-		fmt.Printf("\n[2/3] Detected Bluebeam Revu 21 MSI: %s\n", revuMsi)
+		fmt.Printf("\n[2/3] Selected Bluebeam Revu 21 MSI: %s\n", revuMsi)
 		if payloads.OCRMSI != "" {
-			fmt.Printf("      Detected Bluebeam OCR 21 MSI : %s\n", payloads.OCRMSI)
+			fmt.Printf("      Selected Bluebeam OCR 21 MSI : %s\n", payloads.OCRMSI)
 		}
 		if payloads.BPXProfile != "" {
-			fmt.Printf("      Detected Bluebeam .bpx Profile: %s\n", payloads.BPXProfile)
+			fmt.Printf("      Selected Bluebeam .bpx Profile: %s\n", payloads.BPXProfile)
 		}
 	}
 
@@ -270,6 +305,8 @@ func printUsage() {
 Usage:
   linbeam                          Open the guided Web UI installer & manager
   linbeam setup [path-to-revu.msi] Run guided CLI installation (Proton-GE + .NET 4.8 + MSI patch + Revu 21)
+  linbeam update [--full]          Pull latest launcher binary, Proton-GE (amd64), and update prefix/shortcuts
+  linbeam download                 Pull and unpack official Bluebeam x64 MSI ZIP (bluebeam.com/MSIdeployx64)
   linbeam launch [file.pdf ...]    Launch Bluebeam Revu 21 directly
   linbeam status                   Show runner, prefix, and payload detection status
   linbeam proton                   List or download latest GE-Proton runner

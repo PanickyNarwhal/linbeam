@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-// PayloadInfo describes discovered local installation media in payloads/ or Downloads.
+// PayloadInfo describes discovered local or downloaded installation media.
 type PayloadInfo struct {
 	PayloadsDir string `json:"payloads_dir"`
 	RevuMSI     string `json:"revu_msi"`
 	OCRMSI      string `json:"ocr_msi"`
 	VCRedistX64 string `json:"vcredist_x64"`
 	VCRedistX86 string `json:"vcredist_x86"`
+	DotNet48Exe string `json:"dotnet48_exe"`
 	BPXProfile  string `json:"bpx_profile"`
 }
 
@@ -57,6 +58,12 @@ func DefaultConfig() (*Config, error) {
 	}
 	cfg.AutoDetectPayloads()
 	return cfg, nil
+}
+
+// ManagedPayloadsDir returns the managed payloads directory inside DataDir where
+// official Bluebeam MSI deployment ZIP archives are unpacked.
+func (c *Config) ManagedPayloadsDir() string {
+	return filepath.Join(c.DataDir, "payloads")
 }
 
 // Load reads the configuration from disk or returns defaults if not yet saved.
@@ -115,7 +122,7 @@ func (c *Config) Save() error {
 
 // EnsureDirs creates all required Linbeam directories on disk.
 func (c *Config) EnsureDirs() error {
-	dirs := []string{c.DataDir, c.PrefixDir, c.RunnersDir, c.CacheDir}
+	dirs := []string{c.DataDir, c.PrefixDir, c.RunnersDir, c.CacheDir, c.ManagedPayloadsDir()}
 	for _, d := range dirs {
 		if d == "" {
 			continue
@@ -130,7 +137,7 @@ func (c *Config) EnsureDirs() error {
 // AutoDetectPayloads populates RevuMSIPath, OCRMSIPath, and BPXProfilePath if they are empty or missing.
 func (c *Config) AutoDetectPayloads() PayloadInfo {
 	info := c.DiscoverPayloads()
-	if c.PayloadsDir == "" && info.PayloadsDir != "" {
+	if info.PayloadsDir != "" {
 		c.PayloadsDir = info.PayloadsDir
 	}
 	if (c.RevuMSIPath == "" || !fileExists(c.RevuMSIPath)) && info.RevuMSI != "" {
@@ -150,6 +157,9 @@ func (c *Config) DiscoverPayloads() PayloadInfo {
 	var info PayloadInfo
 
 	var candidateDirs []string
+	if c.DataDir != "" {
+		candidateDirs = append(candidateDirs, filepath.Join(c.DataDir, "payloads"))
+	}
 	if c.PayloadsDir != "" {
 		candidateDirs = append(candidateDirs, c.PayloadsDir)
 	}
@@ -179,18 +189,11 @@ func (c *Config) DiscoverPayloads() PayloadInfo {
 	}
 
 	seen := make(map[string]bool)
-	for _, dir := range candidateDirs {
-		absDir, err := filepath.Abs(dir)
-		if err != nil || seen[absDir] {
-			continue
-		}
-		seen[absDir] = true
-
+	scanDir := func(absDir string) {
 		entries, err := os.ReadDir(absDir)
 		if err != nil {
-			continue
+			return
 		}
-
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
@@ -216,8 +219,32 @@ func (c *Config) DiscoverPayloads() PayloadInfo {
 				info.VCRedistX64 = fullPath
 			} else if lower == "vc_redist.x86.exe" && info.VCRedistX86 == "" {
 				info.VCRedistX86 = fullPath
+			} else if strings.HasPrefix(lower, "ndp48") && strings.HasSuffix(lower, ".exe") && info.DotNet48Exe == "" {
+				info.DotNet48Exe = fullPath
 			} else if strings.HasSuffix(lower, ".bpx") && info.BPXProfile == "" {
 				info.BPXProfile = fullPath
+			}
+		}
+	}
+
+	for _, dir := range candidateDirs {
+		absDir, err := filepath.Abs(dir)
+		if err != nil || seen[absDir] {
+			continue
+		}
+		seen[absDir] = true
+		scanDir(absDir)
+
+		// Also check 1 level of subdirectories inside payloads/ in case a ZIP extracted a nested folder
+		if subEntries, err := os.ReadDir(absDir); err == nil {
+			for _, se := range subEntries {
+				if se.IsDir() {
+					subDir := filepath.Join(absDir, se.Name())
+					if !seen[subDir] {
+						seen[subDir] = true
+						scanDir(subDir)
+					}
+				}
 			}
 		}
 	}

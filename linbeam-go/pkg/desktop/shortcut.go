@@ -1,25 +1,17 @@
 package desktop
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
 
-const linbeamSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0066CC"/>
-      <stop offset="100%" stop-color="#003D82"/>
-    </linearGradient>
-  </defs>
-  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
-  <path d="M34 30h38c14 0 23 7 23 18 0 7-4 13-11 15 9 2 14 9 14 18 0 13-10 21-26 21H34V30zm16 14v15h19c6 0 10-3 10-7.5S75 44 69 44H50zm0 28v16h21c7 0 11-3 11-8s-4-8-11-8H50z" fill="#FFFFFF"/>
-  <circle cx="96" cy="32" r="8" fill="#38BDF8"/>
-</svg>`
+//go:embed revu21.png
+var revu21IconPNG []byte
 
-// CreateShortcut installs the Linux .desktop entries, SVG icon, and MIME/protocol associations.
+// CreateShortcut installs the Linux .desktop entries, official Bluebeam Revu 21 PNG icon, and MIME/protocol associations.
 func CreateShortcut() error {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -40,14 +32,26 @@ func CreateShortcut() error {
 		return err
 	}
 
-	iconDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "scalable", "apps")
-	_ = os.MkdirAll(iconDir, 0755)
-	iconPath := filepath.Join(iconDir, "linbeam.svg")
-	_ = os.WriteFile(iconPath, []byte(linbeamSVG), 0644)
+	// Remove any legacy SVG icon so the official PNG icon takes precedence
+	_ = os.Remove(filepath.Join(home, ".local", "share", "icons", "hicolor", "scalable", "apps", "linbeam.svg"))
+
+	iconDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "256x256", "apps")
+	if err := os.MkdirAll(iconDir, 0755); err != nil {
+		return err
+	}
+	iconPath := filepath.Join(iconDir, "linbeam.png")
+	if err := os.WriteFile(iconPath, revu21IconPNG, 0644); err != nil {
+		return err
+	}
+
+	pixmapDir := filepath.Join(home, ".local", "share", "pixmaps")
+	_ = os.MkdirAll(pixmapDir, 0755)
+	_ = os.WriteFile(filepath.Join(pixmapDir, "linbeam.png"), revu21IconPNG, 0644)
 
 	revuDesktopPath := filepath.Join(appsDir, "linbeam.desktop")
 	revuContent := fmt.Sprintf(`[Desktop Entry]
-Name=Bluebeam Revu 21 (Linbeam)
+Name=Bluebeam Revu 21
+GenericName=PDF CAD & Markup Editor
 Comment=Run Bluebeam Revu 21 on Linux via Proton-GE
 Exec="%s" launch %%F
 Terminal=false
@@ -64,8 +68,8 @@ StartupWMClass=Revu.exe
 
 	mgrDesktopPath := filepath.Join(appsDir, "linbeam-manager.desktop")
 	mgrContent := fmt.Sprintf(`[Desktop Entry]
-Name=Linbeam Setup & Manager
-Comment=Manage Proton-GE prefix and Bluebeam Revu 21 installation
+Name=Linbeam Deployment Manager
+Comment=Configure Proton-GE prefix and Bluebeam Revu 21 installation
 Exec="%s" --gui
 Terminal=false
 Type=Application
@@ -77,6 +81,7 @@ Categories=Utility;System;
 
 	_ = exec.Command("xdg-mime", "default", "linbeam.desktop", "x-scheme-handler/bluebeam").Run()
 	_ = exec.Command("xdg-mime", "default", "linbeam.desktop", "x-scheme-handler/bbstudio").Run()
+	_ = exec.Command("gtk-update-icon-cache", "-f", "-t", filepath.Join(home, ".local", "share", "icons", "hicolor")).Run()
 	_ = exec.Command("update-desktop-database", appsDir).Run()
 
 	return nil

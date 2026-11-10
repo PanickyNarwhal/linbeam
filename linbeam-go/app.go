@@ -16,9 +16,10 @@ import (
 	"github.com/PanickyNarwhal/linbeam/pkg/desktop"
 	"github.com/PanickyNarwhal/linbeam/pkg/installer"
 	"github.com/PanickyNarwhal/linbeam/pkg/proton"
+	"github.com/PanickyNarwhal/linbeam/pkg/updater"
 )
 
-//go:embed ui/index.html
+//go:embed ui/*
 var uiAssets embed.FS
 
 type progressEvent struct {
@@ -32,17 +33,19 @@ type AppServer struct {
 	cfg      *config.Config
 	engine   *proton.Engine
 	bluebeam *installer.BluebeamManager
+	updater  *updater.Manager
 
 	mu          sync.Mutex
 	busy        bool
 	subscribers map[chan progressEvent]struct{}
 }
 
-func NewAppServer(cfg *config.Config, engine *proton.Engine, bm *installer.BluebeamManager) *AppServer {
+func NewAppServer(cfg *config.Config, engine *proton.Engine, bm *installer.BluebeamManager, upd *updater.Manager) *AppServer {
 	return &AppServer{
 		cfg:         cfg,
 		engine:      engine,
 		bluebeam:    bm,
+		updater:     upd,
 		subscribers: make(map[chan progressEvent]struct{}),
 	}
 }
@@ -70,9 +73,11 @@ func (s *AppServer) StartGUI() error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/select-runner", s.handleSelectRunner)
 	mux.HandleFunc("/api/download-proton", s.handleDownloadProton)
+	mux.HandleFunc("/api/download-bluebeam", s.handleDownloadBluebeam)
 	mux.HandleFunc("/api/install-bluebeam", s.handleInstallBluebeam)
 	mux.HandleFunc("/api/install-prereqs", s.handleInstallPrereqs)
 	mux.HandleFunc("/api/repair-postinstall", s.handleRepairPostInstall)
+	mux.HandleFunc("/api/update", s.handleUpdate)
 	mux.HandleFunc("/api/launch", s.handleLaunch)
 	mux.HandleFunc("/api/shortcut", s.handleShortcut)
 	mux.HandleFunc("/api/winecfg", s.handleWinecfg)
@@ -172,6 +177,46 @@ func (s *AppServer) handleDownloadProton(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		s.broadcast(progressEvent{Stage: "Proton-GE ready!", Percent: 100, Done: true})
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"started": true})
+}
+
+func (s *AppServer) handleDownloadBluebeam(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.Lock()
+	if s.busy {
+		s.mu.Unlock()
+		http.Error(w, "another operation is in progress", http.StatusConflict)
+		return
+	}
+	s.busy = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.busy = false
+			s.mu.Unlock()
+		}()
+
+		info, err := s.bluebeam.DownloadAndExtractDeploymentZip(func(stage string, percent int) {
+			s.broadcast(progressEvent{Stage: stage, Percent: percent})
+		})
+		if err != nil {
+			s.broadcast(progressEvent{Stage: "Error: " + err.Error(), Percent: 0, Done: true, Error: err.Error()})
+			return
+		}
+		s.broadcast(progressEvent{
+			Stage:   fmt.Sprintf("Unpacked & selected %s", filepath.Base(info.RevuMSI)),
+			Percent: 100,
+			Done:    true,
+		})
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -283,6 +328,51 @@ func (s *AppServer) handleRepairPostInstall(w http.ResponseWriter, r *http.Reque
 			s.broadcast(progressEvent{Stage: line, Percent: 75})
 		})
 		s.broadcast(progressEvent{Stage: "Post-install repair complete!", Percent: 100, Done: true})
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"started": true})
+}
+
+func (s *AppServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UpdateMSI bool `json:"update_msi"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	s.mu.Lock()
+	if s.busy {
+		s.mu.Unlock()
+		http.Error(w, "another operation is in progress", http.StatusConflict)
+		return
+	}
+	s.busy = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.busy = false
+			s.mu.Unlock()
+		}()
+
+		_, err := s.updater.UpdateAll(req.UpdateMSI, func(stage string, percent int) {
+			s.broadcast(progressEvent{Stage: stage, Percent: percent})
+		})
+		if err != nil {
+			s.broadcast(progressEvent{Stage: "Error: " + err.Error(), Percent: 0, Done: true, Error: err.Error()})
+			return
+		}
+		s.broadcast(progressEvent{
+			Stage:   "All components updated (Launcher + Proton-GE amd64 + Prefix + Shortcuts).",
+			Percent: 100,
+			Done:    true,
+		})
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

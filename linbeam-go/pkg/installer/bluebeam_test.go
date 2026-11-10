@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,53 @@ import (
 	"github.com/PanickyNarwhal/linbeam/pkg/config"
 	"github.com/PanickyNarwhal/linbeam/pkg/proton"
 )
+
+func TestExtractDeploymentZipAndAutoSelect(t *testing.T) {
+	tmp := t.TempDir()
+	zipPath := filepath.Join(tmp, "MSIBluebeamRevu21x64.zip")
+
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	files := []string{
+		"MSIBluebeamRevu21.11.0x64/Bluebeam Revu x64 21.msi",
+		"MSIBluebeamRevu21.11.0x64/BluebeamOCR x64 21.msi",
+		"MSIBluebeamRevu21.11.0x64/vc_redist.x64.exe",
+		"MSIBluebeamRevu21.11.0x64/ndp48-x86-x64-allos-enu.exe",
+	}
+	for _, name := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte("dummy-payload"))
+	}
+	_ = zw.Close()
+	_ = zf.Close()
+
+	cfg := &config.Config{
+		DataDir:    tmp,
+		PrefixDir:  filepath.Join(tmp, "prefix"),
+		RunnersDir: filepath.Join(tmp, "runners"),
+		CacheDir:   filepath.Join(tmp, "cache"),
+	}
+	if err := extractDeploymentZip(zipPath, cfg.ManagedPayloadsDir(), nil); err != nil {
+		t.Fatalf("extractDeploymentZip failed: %v", err)
+	}
+
+	info := cfg.AutoDetectPayloads()
+	if !strings.HasSuffix(info.RevuMSI, "Bluebeam Revu x64 21.msi") {
+		t.Fatalf("expected Bluebeam Revu x64 21.msi to be auto-selected, got %q", info.RevuMSI)
+	}
+	if !strings.HasSuffix(info.OCRMSI, "BluebeamOCR x64 21.msi") {
+		t.Fatalf("expected BluebeamOCR x64 21.msi to be auto-selected, got %q", info.OCRMSI)
+	}
+	if !strings.HasSuffix(info.DotNet48Exe, "ndp48-x86-x64-allos-enu.exe") {
+		t.Fatalf("expected ndp48-x86-x64-allos-enu.exe to be detected, got %q", info.DotNet48Exe)
+	}
+}
 
 func TestEmbeddedMsiPatcherPresent(t *testing.T) {
 	if len(embeddedMsiPatcherCS) < 1000 {

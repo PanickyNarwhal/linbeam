@@ -1,8 +1,10 @@
 package installer
 
 import (
+	"archive/zip"
 	_ "embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -18,11 +20,14 @@ import (
 var embeddedMsiPatcherCS []byte
 
 const (
-	vcRedistX64URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
-	vcRedistX86URL = "https://aka.ms/vs/17/release/vc_redist.x86.exe"
+	// BluebeamMSIDeployURL is the official Bluebeam x64 MSI deployment package endpoint.
+	BluebeamMSIDeployURL = "https://bluebeam.com/MSIdeployx64"
+	vcRedistX64URL       = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+	vcRedistX86URL       = "https://aka.ms/vs/17/release/vc_redist.x86.exe"
+	browserUserAgent     = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 
-// BluebeamManager handles installing, patching, configuring, and launching Bluebeam Revu 21.
+// BluebeamManager handles downloading, patching, installing, configuring, and launching Bluebeam Revu 21.
 type BluebeamManager struct {
 	Config *config.Config
 	Engine *proton.Engine
@@ -33,6 +38,164 @@ func NewBluebeamManager(cfg *config.Config, engine *proton.Engine) *BluebeamMana
 		Config: cfg,
 		Engine: engine,
 	}
+}
+
+// DownloadAndExtractDeploymentZip downloads the official 64-bit MSI deployment package
+// from https://bluebeam.com/MSIdeployx64, unpacks the archive into ~/.local/share/linbeam/payloads,
+// and auto-selects Bluebeam Revu x64 21.msi, BluebeamOCR x64 21.msi, and VC++ redistributables.
+func (bm *BluebeamManager) DownloadAndExtractDeploymentZip(progress func(stage string, percent int)) (*config.PayloadInfo, error) {
+	emit := func(stage string, pct int) {
+		if progress != nil {
+			progress(stage, pct)
+		}
+	}
+
+	if err := bm.Config.EnsureDirs(); err != nil {
+		return nil, err
+	}
+
+	destDir := bm.Config.ManagedPayloadsDir()
+	zipPath := filepath.Join(bm.Config.CacheDir, "MSIBluebeamRevu21x64.zip")
+
+	emit("Connecting to https://bluebeam.com/MSIdeployx64...", 2)
+
+	req, err := http.NewRequest("GET", BluebeamMSIDeployURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Bluebeam download server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Bluebeam download server returned HTTP %d", resp.StatusCode)
+	}
+
+	totalBytes := resp.ContentLength
+	out, err := os.Create(zipPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary ZIP file: %w", err)
+	}
+
+	buf := make([]byte, 128*1024)
+	var downloaded int64
+	lastPct := -1
+
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
+				_ = out.Close()
+				return nil, writeErr
+			}
+			downloaded += int64(n)
+			if totalBytes > 0 {
+				pct := int(downloaded * 100 / totalBytes)
+				if pct != lastPct {
+					lastPct = pct
+					scaled := 4 + (pct * 74 / 100)
+					emit(fmt.Sprintf(
+						"Downloading Bluebeam x64 MSI Deployment ZIP (%d MB / %d MB)...",
+						downloaded/(1024*1024),
+						totalBytes/(1024*1024),
+					), scaled)
+				}
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = out.Close()
+			return nil, fmt.Errorf("error reading deployment stream: %w", readErr)
+		}
+	}
+	if err := out.Close(); err != nil {
+		return nil, err
+	}
+
+	emit("Unpacking Bluebeam MSI deployment archive...", 80)
+	if err := extractDeploymentZip(zipPath, destDir, func(fileName string, idx, total int) {
+		scaled := 80 + (idx * 18 / maxInt(total, 1))
+		emit(fmt.Sprintf("Extracting %s (%d/%d)...", fileName, idx, total), scaled)
+	}); err != nil {
+		return nil, fmt.Errorf("failed to unpack Bluebeam deployment ZIP: %w", err)
+	}
+
+	// Remove the 2.5 GB ZIP archive after extraction
+	_ = os.Remove(zipPath)
+
+	info := bm.Config.AutoDetectPayloads()
+	_ = bm.Config.Save()
+
+	if info.RevuMSI == "" {
+		return &info, fmt.Errorf("archive extracted to %s, but Bluebeam Revu MSI was not found inside", destDir)
+	}
+
+	emit(fmt.Sprintf("Selected %s and %s", filepath.Base(info.RevuMSI), filepath.Base(info.OCRMSI)), 100)
+	return &info, nil
+}
+
+func extractDeploymentZip(zipPath, destDir string, onFile func(name string, idx, total int)) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	var files []*zip.File
+	for _, f := range r.File {
+		if !f.FileInfo().IsDir() {
+			files = append(files, f)
+		}
+	}
+
+	for i, f := range files {
+		baseName := filepath.Base(strings.ReplaceAll(f.Name, `\`, `/`))
+		if baseName == "" || baseName == "." {
+			continue
+		}
+		if onFile != nil {
+			onFile(baseName, i+1, len(files))
+		}
+
+		targetPath := filepath.Join(destDir, baseName)
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			_ = rc.Close()
+			return err
+		}
+
+		_, copyErr := io.Copy(outFile, rc)
+		_ = outFile.Close()
+		_ = rc.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+	}
+
+	return nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // FindRevuExecutable searches the Proton-GE prefix for Revu.exe.
@@ -88,7 +251,6 @@ func (bm *BluebeamManager) HasDotNet48() bool {
 	if !fileExists(csc64) || !fileExists(mscorlib64) {
 		return false
 	}
-	// Wine Mono creates a small stub csc.exe; real Microsoft .NET 4.8 mscorlib.dll is > 4 MB
 	if st, err := os.Stat(mscorlib64); err == nil && st.Size() > 3*1024*1024 {
 		return true
 	}
@@ -104,7 +266,7 @@ func (bm *BluebeamManager) InstallPrerequisites(progress func(stage string, perc
 		}
 	}
 
-	emit("Step 1/4: Initializing Proton-GE prefix, DXVK & WPF fonts...", 5)
+	emit("Step 1/4: Initializing Proton-GE (amd64) prefix, DXVK & WPF fonts...", 5)
 	if err := bm.Engine.InitPrefixStream(func(line string) {
 		emit("[Proton] "+line, 10)
 	}); err != nil {
@@ -159,6 +321,14 @@ func (bm *BluebeamManager) InstallPrerequisites(progress func(stage string, perc
 		}, "dotnet48"); err != nil {
 			emit(fmt.Sprintf("Note: winetricks dotnet48 exited with: %v (verifying installation...)", err), 41)
 		}
+		// Fallback to bundled ndp48-x86-x64-allos-enu.exe if extracted from Bluebeam ZIP
+		if !bm.HasDotNet48() && payloads.DotNet48Exe != "" && fileExists(payloads.DotNet48Exe) {
+			emit("Running bundled ndp48-x86-x64-allos-enu.exe offline installer...", 41)
+			_ = bm.Engine.RunWineStream(func(line string) {
+				emit("[ndp48] "+line, 42)
+			}, payloads.DotNet48Exe, "/q", "/norestart")
+			_ = bm.Engine.WaitServer()
+		}
 	}
 
 	// Re-apply Windows 10 (19045) + Bluebeam registry overrides because dotnet48 resets OS version to Win7
@@ -168,7 +338,7 @@ func (bm *BluebeamManager) InstallPrerequisites(progress func(stage string, perc
 	_ = bm.Engine.ApplyDarkTheme(nil)
 	_ = bm.Engine.WaitServer()
 
-	emit("Prerequisites ready!", 48)
+	emit("Prerequisites ready.", 48)
 	return nil
 }
 
@@ -188,7 +358,6 @@ func (bm *BluebeamManager) CompileAndPatchMSI(srcMsiPath, extractDir string, emi
 		_ = os.MkdirAll(extractDir, 0755)
 	}
 
-	// Copy the MSI into C:\windows\temp so msi.dll and msiexec operate on a native C:\ path
 	patchedBase := "patched_" + strings.ReplaceAll(filepath.Base(srcMsiPath), " ", "_")
 	patchedLinuxPath := filepath.Join(winTempDir, patchedBase)
 	emit(fmt.Sprintf("Copying %s to %s for Wine MSI patching...", filepath.Base(srcMsiPath), patchedBase))
@@ -239,7 +408,7 @@ func (bm *BluebeamManager) CompileAndPatchMSI(srcMsiPath, extractDir string, emi
 	return patchedLinuxPath, nil
 }
 
-// InstallFull Pipeline runs Prerequisites -> MSI Patching -> OCR & Revu 21 MSI Install -> WebView2 & Safe.enx Post-Install.
+// InstallFull runs Deployment Download (if needed) -> Prerequisites -> MSI Patching -> OCR & Revu 21 MSI Install -> WebView2 & Safe.enx Post-Install.
 func (bm *BluebeamManager) InstallFull(revuMsiPath, ocrMsiPath, bpxProfilePath string, progress func(stage string, percent int)) error {
 	emit := func(stage string, pct int) {
 		if progress != nil {
@@ -258,8 +427,19 @@ func (bm *BluebeamManager) InstallFull(revuMsiPath, ocrMsiPath, bpxProfilePath s
 		bpxProfilePath = payloads.BPXProfile
 	}
 
+	// Automatically download and unpack from https://bluebeam.com/MSIdeployx64 if MSI is not present locally
 	if revuMsiPath == "" || !fileExists(revuMsiPath) {
-		return fmt.Errorf("Bluebeam Revu 21 MSI not found. Place 'Bluebeam Revu x64 21.msi' in payloads/ or select it in the installer")
+		emit("Local Bluebeam MSI not found; downloading official package from https://bluebeam.com/MSIdeployx64...", 2)
+		dlInfo, err := bm.DownloadAndExtractDeploymentZip(func(stage string, pct int) {
+			emit(stage, pct/3)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to download Bluebeam deployment package: %w", err)
+		}
+		revuMsiPath = dlInfo.RevuMSI
+		if ocrMsiPath == "" {
+			ocrMsiPath = dlInfo.OCRMSI
+		}
 	}
 
 	if err := bm.InstallPrerequisites(progress); err != nil {
@@ -292,6 +472,9 @@ func (bm *BluebeamManager) InstallFull(revuMsiPath, ocrMsiPath, bpxProfilePath s
 			"REBOOT=ReallySuppress",
 		)
 		_ = bm.Engine.WaitServer()
+		if patchedOCR != ocrMsiPath {
+			_ = os.Remove(patchedOCR)
+		}
 	}
 
 	// Patch and install Bluebeam Revu x64 21.msi
@@ -322,7 +505,6 @@ func (bm *BluebeamManager) InstallFull(revuMsiPath, ocrMsiPath, bpxProfilePath s
 	)
 	_ = bm.Engine.WaitServer()
 
-	// Remove temporary patched MSI copy to save disk space
 	_ = os.Remove(patchedRevu)
 
 	exePath, found := bm.FindRevuExecutable()
@@ -344,7 +526,7 @@ func (bm *BluebeamManager) InstallFull(revuMsiPath, ocrMsiPath, bpxProfilePath s
 	bm.Config.FirstRunComplete = true
 	_ = bm.Config.Save()
 
-	emit("Bluebeam Revu 21 installed and configured!", 100)
+	emit("Bluebeam Revu 21 installed and configured.", 100)
 	return nil
 }
 
@@ -353,7 +535,6 @@ func (bm *BluebeamManager) InstallFull(revuMsiPath, ocrMsiPath, bpxProfilePath s
 func (bm *BluebeamManager) ConfigurePostInstall(revuDir, extractDir, bpxProfilePath string, emit func(string)) {
 	driveC := bm.Engine.DriveCPath()
 
-	// 1. Unpack Microsoft.WebView2.FixedVersionRuntime.x64.7z into Revu\WebView2Runtime
 	wv2TargetDir := filepath.Join(revuDir, "WebView2Runtime")
 	wv2Exe := filepath.Join(wv2TargetDir, "msedgewebview2.exe")
 	if !fileExists(wv2Exe) {
@@ -388,10 +569,7 @@ func (bm *BluebeamManager) ConfigurePostInstall(revuDir, extractDir, bpxProfileP
 				)
 			}
 
-			// Flatten nested Microsoft.WebView2.FixedVersionRuntime.*.x64 folder
 			flattenSingleSubdir(wv2TargetDir, emit)
-
-			// Clean up temporary .7z archives dropped by MSI
 			_ = os.Remove(archive7z)
 		} else {
 			emit("Note: Bundled WebView2 .7z archive not found in Temp; skipping extraction.")
@@ -400,7 +578,6 @@ func (bm *BluebeamManager) ConfigurePostInstall(revuDir, extractDir, bpxProfileP
 		emit("WebView2 FixedVersionRuntime is already unpacked in Revu\\WebView2Runtime.")
 	}
 
-	// 2. Copy and run Bluebeam Admin Install.exe to create Safe.enx
 	adminExeSrc := filepath.Join(extractDir, "Bluebeam Admin Install.exe")
 	adminCfgSrc := filepath.Join(extractDir, "Bluebeam Admin Install.exe.config")
 	if fileExists(adminExeSrc) {
@@ -428,7 +605,6 @@ func (bm *BluebeamManager) ConfigurePostInstall(revuDir, extractDir, bpxProfileP
 		emit("Verified Safe.enx license configuration file in ProgramData.")
 	}
 
-	// 3. Copy .bpx profile if provided
 	if bpxProfilePath != "" && fileExists(bpxProfilePath) {
 		bpxName := filepath.Base(bpxProfilePath)
 		progDataDir := filepath.Join(driveC, "ProgramData", "Bluebeam Software", "Bluebeam Revu", "21", "Revu")
@@ -508,7 +684,6 @@ func (bm *BluebeamManager) readMsiLogFailure() string {
 	if err != nil {
 		return "No revu_install.log found."
 	}
-	// Strip null bytes if UTF-16LE
 	cleaned := strings.ReplaceAll(string(data), "\x00", "")
 	lines := strings.Split(cleaned, "\n")
 	var contextLines []string
@@ -566,7 +741,12 @@ func downloadSimple(url, destPath string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return err
 	}
-	resp, err := http.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", browserUserAgent)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}

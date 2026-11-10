@@ -104,6 +104,9 @@ func (e *Engine) DiscoverRunners() ([]RunnerInfo, error) {
 			if info, ok := inspectRunnerDir(entry.Name(), runnerPath, sd.source); ok {
 				seen[absPath] = true
 				runners = append(runners, info)
+			} else if sd.source == "linbeam" && isARM64RunnerDir(runnerPath) {
+				// Automatically purge accidentally downloaded aarch64/arm64 runners from linbeam's runners dir
+				_ = os.RemoveAll(runnerPath)
 			}
 		}
 	}
@@ -115,7 +118,62 @@ func (e *Engine) DiscoverRunners() ([]RunnerInfo, error) {
 	return runners, nil
 }
 
+// isCompatibleX86Binary verifies that an ELF binary is x86_64 (EM_X86_64 = 62) or i386 (EM_386 = 3),
+// rejecting aarch64 (EM_AARCH64 = 183) builds on x86_64 Ryzen / Intel laptops.
+func isCompatibleX86Binary(binPath string) bool {
+	f, err := os.Open(binPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	var hdr [20]byte
+	n, err := f.Read(hdr[:])
+	if err != nil || n < 20 {
+		return false
+	}
+
+	// If it's a shell script wrapper (#!), allow it
+	if hdr[0] == '#' && hdr[1] == '!' {
+		return true
+	}
+
+	// Check ELF magic \x7fELF
+	if hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F' {
+		machine := binary.LittleEndian.Uint16(hdr[18:20])
+		// 62 (0x3E) = EM_X86_64, 3 (0x03) = EM_386
+		return machine == 62 || machine == 3
+	}
+
+	return true
+}
+
+func isARM64RunnerDir(dir string) bool {
+	lower := strings.ToLower(filepath.Base(dir))
+	if strings.Contains(lower, "aarch64") || strings.Contains(lower, "arm64") {
+		return true
+	}
+	for _, sub := range []string{"files", "dist", ""} {
+		base := dir
+		if sub != "" {
+			base = filepath.Join(dir, sub)
+		}
+		for _, bin := range []string{"wine64", "wine"} {
+			p := filepath.Join(base, "bin", bin)
+			if fileExists(p) && !isCompatibleX86Binary(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func inspectRunnerDir(name, dir, source string) (RunnerInfo, bool) {
+	lowerName := strings.ToLower(name)
+	if strings.Contains(lowerName, "aarch64") || strings.Contains(lowerName, "arm64") {
+		return RunnerInfo{}, false
+	}
+
 	info := RunnerInfo{
 		Name:   name,
 		Path:   dir,
@@ -138,6 +196,14 @@ func inspectRunnerDir(name, dir, source string) (RunnerInfo, bool) {
 		serverBin := filepath.Join(base, "bin", "wineserver")
 
 		if fileExists(wineBin) || fileExists(wine64Bin) {
+			checkBin := wine64Bin
+			if !fileExists(checkBin) {
+				checkBin = wineBin
+			}
+			if !isCompatibleX86Binary(checkBin) {
+				return info, false
+			}
+
 			if fileExists(wineBin) {
 				info.WineBin = wineBin
 			} else {
@@ -219,7 +285,11 @@ func (e *Engine) DownloadLatestGEProton(progress func(stage string, percent int)
 	var downloadURL, assetName string
 	var assetSize int64
 	for _, asset := range release.Assets {
-		if strings.HasSuffix(asset.Name, ".tar.gz") && !strings.Contains(asset.Name, "sha512") {
+		lowerAsset := strings.ToLower(asset.Name)
+		if strings.HasSuffix(lowerAsset, ".tar.gz") &&
+			!strings.Contains(lowerAsset, "sha512") &&
+			!strings.Contains(lowerAsset, "aarch64") &&
+			!strings.Contains(lowerAsset, "arm64") {
 			downloadURL = asset.BrowserDownloadURL
 			assetName = asset.Name
 			assetSize = asset.Size
@@ -228,13 +298,16 @@ func (e *Engine) DownloadLatestGEProton(progress func(stage string, percent int)
 	}
 
 	if downloadURL == "" {
-		return nil, fmt.Errorf("no .tar.gz asset found in release %s", release.TagName)
+		return nil, fmt.Errorf("no x86_64/amd64 .tar.gz asset found in release %s", release.TagName)
 	}
 
 	destDir := filepath.Join(e.Config.RunnersDir, release.TagName)
+	if isARM64RunnerDir(destDir) {
+		_ = os.RemoveAll(destDir)
+	}
 	if info, ok := inspectRunnerDir(release.TagName, destDir, "linbeam"); ok {
 		if progress != nil {
-			progress(fmt.Sprintf("%s is already installed.", release.TagName), 100)
+			progress(fmt.Sprintf("%s (amd64) is already installed.", release.TagName), 100)
 		}
 		e.Config.SelectedRunner = info.Name
 		_ = e.Config.Save()
