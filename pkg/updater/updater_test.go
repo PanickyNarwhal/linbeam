@@ -46,3 +46,22 @@ func TestFindGitRepoRoot(t *testing.T) {
 		t.Fatalf("expected git repo root %s, got %s (ok=%v)", tmp, root, ok)
 	}
 }
+
+func TestSelectReleaseAssetURL(t *testing.T) {
+	assets := []releaseAsset{
+		{Name: "SHA256SUMS.txt", BrowserDownloadURL: "https://example.com/SHA256SUMS.txt"},
+		{Name: "Linbeam-aarch64.AppImage", BrowserDownloadURL: "https://example.com/arm64.AppImage"},
+		{Name: "Linbeam-x86_64.AppImage", BrowserDownloadURL: "https://example.com/Linbeam-x86_64.AppImage"},
+		{Name: "linbeam-linux-amd64", BrowserDownloadURL: "https://example.com/linbeam-linux-amd64"},
+	}
+
+	gotAppImg := selectReleaseAssetURL(assets, true)
+	if gotAppImg != "https://example.com/Linbeam-x86_64.AppImage" {
+		t.Fatalf("expected AppImage URL, got %q", gotAppImg)
+	}
+
+	gotBin := selectReleaseAssetURL(assets, false)
+	if gotBin != "https://example.com/linbeam-linux-amd64" {
+		t.Fatalf("expected standalone binary URL, got %q", gotBin)
+	}
+}

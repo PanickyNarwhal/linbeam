@@ -13,6 +13,28 @@ import (
 //go:embed revu21.png
 var revu21IconPNG []byte
 
+// ResolveExecutablePath returns the persistent executable path on disk.
+// When running inside a Linux AppImage, it returns the outer .AppImage file path ($APPIMAGE)
+// rather than the ephemeral FUSE mount inside /tmp/.mount_*.
+func ResolveExecutablePath() (string, error) {
+	if appImg := strings.TrimSpace(os.Getenv("APPIMAGE")); appImg != "" {
+		if resolved, err := filepath.EvalSymlinks(appImg); err == nil {
+			return resolved, nil
+		}
+		return appImg, nil
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve current executable path: %w", err)
+	}
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to evaluate executable symlinks: %w", err)
+	}
+	return exePath, nil
+}
+
 // CreateShortcut installs the Linux .desktop entries, official Bluebeam Revu 21 PNG icon,
 // and XDG MIME/protocol associations (including revusignin:// OAuth sign-in callbacks).
 func CreateShortcut() error {
@@ -20,13 +42,9 @@ func CreateShortcut() error {
 		return nil
 	}
 
-	exePath, err := os.Executable()
+	exePath, err := ResolveExecutablePath()
 	if err != nil {
-		return fmt.Errorf("failed to resolve current executable path: %w", err)
-	}
-	exePath, err = filepath.EvalSymlinks(exePath)
-	if err != nil {
-		return fmt.Errorf("failed to evaluate executable symlinks: %w", err)
+		return err
 	}
 
 	home, err := os.UserHomeDir()
@@ -114,7 +132,11 @@ func EnsureProtocolHandlers() {
 	}
 	revuDesktopPath := filepath.Join(home, ".local", "share", "applications", "linbeam.desktop")
 	data, err := os.ReadFile(revuDesktopPath)
-	if err != nil || !strings.Contains(string(data), "x-scheme-handler/revusignin") || !strings.Contains(string(data), "%U") {
+	s := string(data)
+	if err != nil ||
+		!strings.Contains(s, "x-scheme-handler/revusignin") ||
+		!strings.Contains(s, "%U") ||
+		strings.Contains(s, "/.mount_") {
 		_ = CreateShortcut()
 	}
 }

@@ -1,25 +1,20 @@
-# Bluebeam Payloads & Custom Assets
+# Local Bluebeam MSI Payloads & Profiles (never commit proprietary installers)
 payloads/*
 !payloads/.gitkeep
 assets/*
 !assets/.gitkeep
+*.msi
+*.bpx
+*.7z
+*.zip
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyo
-*.pyd
-.venv/
-venv/
-env/
-ENV/
-.pytest_cache/
+# Build & Release Staging
+dist/
+*.AppDir/
+*.AppImage
+*.new
 
-# Local runtime and generated output
-converted-md/
-*.docx
-*.pdf
+# Local Runtime Logs & Temp Files
 *.log
 *.log.*
 *.tmp
@@ -27,12 +22,9 @@ converted-md/
 .env
 .env.local
 
-# OS/editor noise
+# OS / Editor Noise
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *~
-
-# Optional local tool artifacts
-pandoc.exe

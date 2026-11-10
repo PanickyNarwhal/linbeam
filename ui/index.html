@@ -500,6 +500,112 @@
   .form-grid .full {
     grid-column: span 2;
   }
+
+  /* Masthead Update Progress Strip */
+  .update-strip {
+    display: none;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-hairline);
+    flex-direction: column;
+  }
+
+  .update-strip.visible {
+    display: flex;
+  }
+
+  .update-strip-inner {
+    max-width: 820px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 9px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .update-strip-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .update-pill {
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid rgba(0, 136, 230, 0.45);
+    background: var(--bb-blue-subtle);
+    color: var(--bb-blue-hover);
+    flex-shrink: 0;
+  }
+
+  .update-pill.done {
+    border-color: rgba(46, 160, 67, 0.5);
+    background: rgba(46, 160, 67, 0.12);
+    color: #56d364;
+  }
+
+  .update-pill.err {
+    border-color: rgba(248, 81, 73, 0.5);
+    background: rgba(248, 81, 73, 0.12);
+    color: #ff7b72;
+  }
+
+  .update-strip-msg {
+    color: var(--ink-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .update-strip-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .update-strip-pct {
+    font-weight: 600;
+    color: var(--bb-blue-hover);
+  }
+
+  .update-strip-pct.done {
+    color: #56d364;
+  }
+
+  .update-strip-pct.err {
+    color: #ff7b72;
+  }
+
+  .update-dismiss {
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .progress-fill.done {
+    background: var(--status-ok);
+  }
+
+  .progress-fill.err {
+    background: var(--status-err);
+  }
+
+  .btn-update-done {
+    border-color: rgba(46, 160, 67, 0.55);
+    color: #56d364;
+  }
 </style>
 </head>
 <body>
@@ -513,9 +619,9 @@
     </div>
   </div>
   <div class="masthead-right">
-    <button onclick="updateAll(false)" title="Pull latest Linbeam launcher binary, latest GE-Proton (amd64), and refresh prefix/shortcuts">
+    <button id="btnUpdateHeader" onclick="updateAll(false)" title="Pull latest Linbeam launcher, latest GE-Proton (amd64), and refresh prefix/shortcuts">
       <svg viewBox="0 0 24 24"><path d="M4 4v5h5M20 20v-5h-5M4 9a9 9 0 0114.6-3.6L20 7M20 15a9 9 0 01-14.6 3.6L4 17"/></svg>
-      Update Launcher &amp; Stack
+      <span id="btnUpdateHeaderLabel">Update Launcher &amp; Stack</span>
     </button>
     <span class="arch-tag">ARCH: x86_64 / amd64</span>
     <div id="globalStatus" class="status-tag">
@@ -525,6 +631,22 @@
   </div>
 </header>
 
+<div id="updateStrip" class="update-strip">
+  <div class="update-strip-inner">
+    <div class="update-strip-left">
+      <span id="updatePill" class="update-pill">UPDATING</span>
+      <span id="updateStripMsg" class="update-strip-msg">Initializing stack update...</span>
+    </div>
+    <div class="update-strip-right">
+      <span id="updateStripPct" class="update-strip-pct">000%</span>
+      <button id="btnUpdateDismiss" class="update-dismiss" style="display:none" onclick="dismissUpdateStrip()">Dismiss</button>
+    </div>
+  </div>
+  <div class="progress-track">
+    <div id="updateStripFill" class="progress-fill"></div>
+  </div>
+</div>
+
 <main>
   <!-- 3-Stage Specification Ledger Navigation -->
   <div class="step-ledger">
@@ -533,21 +655,21 @@
         <span>STAGE 01</span>
         <span id="step1State" class="step-state-indicator">PENDING</span>
       </div>
-      <div class="step-cell-title">Proton-GE Runtime (amd64)</div>
+      <div class="step-cell-title">Proton-GE Runtime</div>
     </div>
     <div id="navStep2" class="step-cell" onclick="showStep(2)">
       <div class="step-cell-header">
         <span>STAGE 02</span>
         <span id="step2State" class="step-state-indicator">PENDING</span>
       </div>
-      <div class="step-cell-title">MSI Package & Prefix Setup</div>
+      <div class="step-cell-title">MSI Installer &amp; Patcher</div>
     </div>
     <div id="navStep3" class="step-cell" onclick="showStep(3)">
       <div class="step-cell-header">
         <span>STAGE 03</span>
         <span id="step3State" class="step-state-indicator">STANDBY</span>
       </div>
-      <div class="step-cell-title">Workstation Launch & Control</div>
+      <div class="step-cell-title">Linbeam Runtime Launcher</div>
     </div>
   </div>
 
@@ -555,8 +677,8 @@
   <section id="step1" class="stage-panel active">
     <div class="panel-header">
       <div>
-        <h2>Proton-GE x86_64 Runtime Selection</h2>
-        <p>Select an installed x86_64 Proton-GE build or fetch the latest release directly from GitHub. ARM64/aarch64 builds are automatically filtered out for Ryzen and Intel x86_64 workstations.</p>
+        <h2>Proton-GE Runtime Selection</h2>
+        <p>Select an installed x86_64 Proton-GE or fetch the latest release from GitHub.</p>
       </div>
     </div>
     <div class="panel-body">
@@ -568,11 +690,7 @@
       </div>
 
       <div class="spec-ledger">
-        <div class="spec-cell">
-          <span class="spec-key">Target Instruction Set</span>
-          <span class="spec-val">ELF64 EM_X86_64 (amd64 / Ryzen / Intel)</span>
-        </div>
-        <div class="spec-cell">
+        <div class="spec-cell full-span">
           <span class="spec-key">Graphics Pipeline</span>
           <span class="spec-val">DXVK (Direct3D 11 / 9 over Vulkan)</span>
         </div>
@@ -598,8 +716,8 @@
   <section id="step2" class="stage-panel">
     <div class="panel-header">
       <div>
-        <h2>Bluebeam Revu 21 Deployment Media & MSI Patcher</h2>
-        <p>Pulls the official 64-bit MSI deployment archive from bluebeam.com/MSIdeployx64, unpacks Revu 21 and OCR 21, strips incompatible InstallShield PowerShell custom actions, and provisions .NET 4.8 + WebView2.</p>
+        <h2>Bluebeam Revu 21 MSI Installer &amp; Patcher</h2>
+        <p>Pulls the latest official MSI archive from bluebeam.com/MSideployx64, and unpacks Revu 21, OCR 21, .NET 4.8+ and WebView2 to be installed.</p>
       </div>
     </div>
     <div class="panel-body">
@@ -655,12 +773,12 @@
     </div>
   </section>
 
-  <!-- STAGE 03: Workstation Launch & Prefix Control -->
+  <!-- STAGE 03: Linbeam Runtime Launcher -->
   <section id="step3" class="stage-panel">
     <div class="panel-header">
       <div>
-        <h2>Workstation Runtime & Prefix Administration</h2>
-        <p>Launch Bluebeam Revu 21 with DXVK hardware acceleration and WebView2 sandbox overrides, or manage desktop integration and prefix state.</p>
+        <h2>Linbeam Runtime Launcher</h2>
+        <p>Launch Bluebeam Revu 21 with DXVK hardware acceleration and native browser OAuth sign-in, or manage desktop integration and prefix state.</p>
       </div>
     </div>
     <div class="panel-body">
@@ -702,7 +820,7 @@
       </button>
       <button id="btnShortcut" onclick="createShortcut()">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8m-4-3v3"/></svg>
-        Install Desktop Launcher (Revu 21 Icon)
+        Install Desktop Launcher
       </button>
     </div>
   </section>
@@ -822,18 +940,97 @@
     }
   }
 
-  function connectProgressSSE() {
+  let isUpdateTask = false;
+  let updateResetTimer = null;
+
+  function dismissUpdateStrip() {
+    document.getElementById('updateStrip').classList.remove('visible');
+  }
+
+  function connectProgressSSE(forUpdate) {
     if (activeSSE) activeSSE.close();
+    isUpdateTask = !!forUpdate;
     const logEl = document.getElementById('logConsole');
+    const progFill = document.getElementById('progressFill');
+    progFill.classList.remove('done', 'err');
+    progFill.style.width = '2%';
+    document.getElementById('progressPct').textContent = '002%';
+
+    if (isUpdateTask) {
+      if (updateResetTimer) clearTimeout(updateResetTimer);
+      const strip = document.getElementById('updateStrip');
+      const pill = document.getElementById('updatePill');
+      const stripMsg = document.getElementById('updateStripMsg');
+      const stripPct = document.getElementById('updateStripPct');
+      const stripFill = document.getElementById('updateStripFill');
+      const dismissBtn = document.getElementById('btnUpdateDismiss');
+      const hdrBtn = document.getElementById('btnUpdateHeader');
+      const hdrLbl = document.getElementById('btnUpdateHeaderLabel');
+
+      strip.classList.add('visible');
+      pill.className = 'update-pill';
+      pill.textContent = 'UPDATING';
+      stripMsg.textContent = 'Checking for latest launcher and Proton-GE updates...';
+      stripPct.className = 'update-strip-pct';
+      stripPct.textContent = '002%';
+      stripFill.className = 'progress-fill';
+      stripFill.style.width = '2%';
+      dismissBtn.style.display = 'none';
+
+      hdrBtn.disabled = true;
+      hdrBtn.classList.remove('btn-update-done');
+      hdrLbl.textContent = 'Updating (002%)...';
+    }
 
     activeSSE = new EventSource('/api/events');
     activeSSE.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
         const pct = data.percent || 0;
+        const pctStr = String(pct).padStart(3, '0') + '%';
         document.getElementById('progressStage').textContent = (data.stage || 'WORKING').toUpperCase();
-        document.getElementById('progressPct').textContent = String(pct).padStart(3, '0') + '%';
-        document.getElementById('progressFill').style.width = pct + '%';
+        document.getElementById('progressPct').textContent = pctStr;
+        progFill.style.width = pct + '%';
+
+        if (isUpdateTask) {
+          const pill = document.getElementById('updatePill');
+          const stripMsg = document.getElementById('updateStripMsg');
+          const stripPct = document.getElementById('updateStripPct');
+          const stripFill = document.getElementById('updateStripFill');
+          const dismissBtn = document.getElementById('btnUpdateDismiss');
+          const hdrBtn = document.getElementById('btnUpdateHeader');
+          const hdrLbl = document.getElementById('btnUpdateHeaderLabel');
+
+          if (data.stage) stripMsg.textContent = data.stage;
+          stripPct.textContent = pctStr;
+          stripFill.style.width = (data.error ? 100 : pct) + '%';
+          if (!data.done) {
+            hdrLbl.textContent = `Updating (${pctStr})...`;
+          } else {
+            hdrBtn.disabled = false;
+            dismissBtn.style.display = 'inline-flex';
+            if (data.error) {
+              pill.className = 'update-pill err';
+              pill.textContent = 'FAILED';
+              stripPct.className = 'update-strip-pct err';
+              stripFill.className = 'progress-fill err';
+              hdrLbl.textContent = 'Update Launcher & Stack';
+            } else {
+              pill.className = 'update-pill done';
+              pill.textContent = 'COMPLETE';
+              stripPct.className = 'update-strip-pct done';
+              stripPct.textContent = '100%';
+              stripFill.className = 'progress-fill done';
+              stripFill.style.width = '100%';
+              hdrBtn.classList.add('btn-update-done');
+              hdrLbl.textContent = 'Update Complete';
+              updateResetTimer = setTimeout(() => {
+                hdrBtn.classList.remove('btn-update-done');
+                hdrLbl.textContent = 'Update Launcher & Stack';
+              }, 6000);
+            }
+          }
+        }
 
         if (data.stage) {
           logEl.textContent += '\n' + data.stage;
@@ -841,8 +1038,10 @@
         }
 
         if (data.done) {
+          progFill.classList.add(data.error ? 'err' : 'done');
           activeSSE.close();
           activeSSE = null;
+          isUpdateTask = false;
           refreshState();
         }
       } catch (e) {}
@@ -861,19 +1060,19 @@
 
   async function downloadProton() {
     document.getElementById('logConsole').textContent = 'Starting Proton-GE (amd64) download...';
-    connectProgressSSE();
+    connectProgressSSE(false);
     await fetch('/api/download-proton', {method: 'POST'});
   }
 
   async function downloadBluebeamZip() {
     document.getElementById('logConsole').textContent = 'Requesting official Bluebeam x64 MSI deployment archive from https://bluebeam.com/MSIdeployx64...';
-    connectProgressSSE();
+    connectProgressSSE(false);
     await fetch('/api/download-bluebeam', {method: 'POST'});
   }
 
   async function installBluebeam() {
     document.getElementById('logConsole').textContent = 'Starting full Bluebeam Revu 21 deployment pipeline...';
-    connectProgressSSE();
+    connectProgressSSE(false);
     const revu_msi = document.getElementById('revuMsiInput').value.trim();
     const ocr_msi = document.getElementById('ocrMsiInput').value.trim();
     const bpx_profile = document.getElementById('bpxInput').value.trim();
@@ -886,13 +1085,13 @@
 
   async function installPrereqs() {
     document.getElementById('logConsole').textContent = 'Provisioning Proton-GE prefix prerequisites...';
-    connectProgressSSE();
+    connectProgressSSE(false);
     await fetch('/api/install-prereqs', {method: 'POST'});
   }
 
   async function repairPostInstall() {
     document.getElementById('logConsole').textContent = 'Re-running post-install WebView2 & Safe.enx provisioning...';
-    connectProgressSSE();
+    connectProgressSSE(false);
     const bpx_profile = document.getElementById('bpxInput').value.trim();
     await fetch('/api/repair-postinstall', {
       method: 'POST',
@@ -903,12 +1102,25 @@
 
   async function updateAll(update_msi) {
     document.getElementById('logConsole').textContent = 'Starting full update (Launcher + Proton-GE amd64 + Prefix + Shortcuts)...';
-    connectProgressSSE();
-    await fetch('/api/update', {
+    connectProgressSSE(true);
+    const res = await fetch('/api/update', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({update_msi: !!update_msi})
     });
+    if (!res.ok) {
+      const msg = await res.text();
+      document.getElementById('btnUpdateHeader').disabled = false;
+      document.getElementById('btnUpdateHeaderLabel').textContent = 'Update Launcher & Stack';
+      document.getElementById('updatePill').className = 'update-pill err';
+      document.getElementById('updatePill').textContent = 'BUSY';
+      document.getElementById('updateStripMsg').textContent = msg || 'Another operation is already running.';
+      document.getElementById('btnUpdateDismiss').style.display = 'inline-flex';
+      if (activeSSE) {
+        activeSSE.close();
+        activeSSE = null;
+      }
+    }
   }
 
   async function launchBluebeam() {

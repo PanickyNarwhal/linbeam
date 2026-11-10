@@ -1,0 +1,86 @@
+name: Build & Release Linbeam (x86_64 AppImage & Binary)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Test, Build Binary & Package AppImage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run Go Unit Tests
+        run: go test -v ./...
+
+      - name: Build Standalone Binary & Linbeam-x86_64.AppImage
+        run: |
+          chmod +x scripts/build-appimage.sh
+          ./scripts/build-appimage.sh
+
+      - name: Upload CI Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linbeam-release-x86_64
+          path: |
+            dist/Linbeam-x86_64.AppImage
+            dist/linbeam-linux-amd64
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Determine Release Tag & Title
+        if: github.event_name != 'pull_request'
+        id: relmeta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            TITLE="Linbeam ${TAG} — Deployment & Runtime Console"
+          else
+            TAG="latest"
+            TITLE="Linbeam — Deployment & Runtime Console (Latest x86_64)"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Rolling Tag Reference
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -fa latest -m "Latest automated x86_64 AppImage & binary build"
+          git push origin refs/tags/latest --force
+
+      - name: Publish GitHub Release (AppImage & Standalone Binary)
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.relmeta.outputs.tag }}
+          name: ${{ steps.relmeta.outputs.title }}
+          prerelease: false
+          make_latest: true
+          body: |
+            ### Linbeam — Bluebeam Revu 21 Deployment & Runtime Console for Linux (`x86_64`)
+
+            #### Downloads
+            - **`Linbeam-x86_64.AppImage`** — Portable self-contained AppImage for the Deployment & Runtime Console (`chmod +x Linbeam-x86_64.AppImage && ./Linbeam-x86_64.AppImage`).
+            - **`linbeam-linux-amd64`** — Static standalone CLI / GUI executable (`CGO_ENABLED=0`, `linux/amd64`).
+            - **`SHA256SUMS.txt`** — SHA-256 checksums.
+          files: |
+            dist/Linbeam-x86_64.AppImage
+            dist/linbeam-linux-amd64
+            dist/SHA256SUMS.txt

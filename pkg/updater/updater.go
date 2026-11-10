@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	githubLatestReleaseAPI = "https://api.github.com/repos/PanickyNarwhal/linbeam/releases/latest"
-	githubRawBinaryMainURL = "https://github.com/PanickyNarwhal/linbeam/raw/main/linbeam-go/linbeam"
-	githubRawBinaryRootURL = "https://github.com/PanickyNarwhal/linbeam/raw/main/linbeam"
-	userAgent              = "Linbeam-Updater/1.0"
+	githubLatestReleaseAPI   = "https://api.github.com/repos/PanickyNarwhal/linbeam/releases/latest"
+	githubRawBinaryRootURL   = "https://github.com/PanickyNarwhal/linbeam/raw/main/linbeam"
+	githubRawBinaryLegacyURL = "https://github.com/PanickyNarwhal/linbeam/raw/main/linbeam-go/linbeam"
+	userAgent                = "Linbeam-Updater/1.0"
 )
 
 // UpdateResult summarizes what was updated during an UpdateAll run.
@@ -127,16 +127,13 @@ func (m *Manager) UpdateAll(updateBluebeamMSI bool, progress func(stage string, 
 		res.ShortcutUpdated = true
 	}
 
-	// If a newer launcher binary was written to disk during this run, invoke its repair & shortcut
+	// If a newer launcher binary or AppImage was written to disk during this run, invoke its repair & shortcut
 	// commands so any newly added prefix or protocol migrations take effect immediately.
 	if res.LauncherUpdated {
-		if exePath, exeErr := os.Executable(); exeErr == nil {
-			if resolved, symErr := filepath.EvalSymlinks(exePath); symErr == nil {
-				exePath = resolved
-			}
-			_ = exec.Command(exePath, "shortcut").Run()
+		if targetExe, exeErr := desktop.ResolveExecutablePath(); exeErr == nil && fileExists(targetExe) {
+			_ = exec.Command(targetExe, "shortcut").Run()
 			if dirExists(m.Engine.DriveCPath()) {
-				_ = exec.Command(exePath, "repair").Run()
+				_ = exec.Command(targetExe, "repair").Run()
 			}
 		}
 	}
@@ -145,9 +142,41 @@ func (m *Manager) UpdateAll(updateBluebeamMSI bool, progress func(stage string, 
 	return res, nil
 }
 
-// UpdateLauncher updates the local git repository (if running from a git clone) and
-// downloads/replaces the running executable with the latest Linux amd64 build from GitHub.
+type releaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+// UpdateLauncher updates the running AppImage, git repository clone, or standalone Linux amd64 binary.
 func (m *Manager) UpdateLauncher(emit func(string)) (gitUpdated bool, binaryUpdated bool, err error) {
+	// 1. AppImage self-update mode ($APPIMAGE points to the outer .AppImage file on disk)
+	if appImg := strings.TrimSpace(os.Getenv("APPIMAGE")); appImg != "" {
+		if resolved, symErr := filepath.EvalSymlinks(appImg); symErr == nil {
+			appImg = resolved
+		}
+		downloadURL := resolveLatestBinaryURL(true)
+		emit("AppImage runtime detected; downloading latest Linbeam AppImage from GitHub Releases...")
+		tmpAppImg := appImg + ".new"
+		if dlErr := downloadFile(downloadURL, tmpAppImg); dlErr != nil {
+			_ = os.Remove(tmpAppImg)
+			return false, false, fmt.Errorf("could not download latest AppImage: %v", dlErr)
+		}
+		if !isValidAMD64ELF(tmpAppImg) {
+			_ = os.Remove(tmpAppImg)
+			return false, false, fmt.Errorf("downloaded AppImage is not a valid Linux x86_64 ELF executable")
+		}
+		if chErr := os.Chmod(tmpAppImg, 0755); chErr != nil {
+			_ = os.Remove(tmpAppImg)
+			return false, false, chErr
+		}
+		if rnErr := os.Rename(tmpAppImg, appImg); rnErr != nil {
+			_ = os.Remove(tmpAppImg)
+			return false, false, fmt.Errorf("failed to replace AppImage %s: %w", appImg, rnErr)
+		}
+		emit("Successfully updated AppImage at " + appImg)
+		return false, true, nil
+	}
+
 	exePath, err := os.Executable()
 	if err != nil {
 		return false, false, err
@@ -157,18 +186,23 @@ func (m *Manager) UpdateLauncher(emit func(string)) (gitUpdated bool, binaryUpda
 		return false, false, err
 	}
 
-	// Check if executable lives inside a git repository
+	// 2. Git clone mode: pull latest changes and rebuild (or use updated binary)
 	exeDir := filepath.Dir(exePath)
 	if repoRoot, ok := findGitRepoRoot(exeDir); ok {
 		emit(fmt.Sprintf("Detected git repository at %s; pulling latest changes...", repoRoot))
 		fetchCmd := exec.Command("git", "-C", repoRoot, "fetch", "origin")
 		if out, fErr := fetchCmd.CombinedOutput(); fErr == nil {
-			// Reset tracked binary/files if modified locally so git pull succeeds cleanly
 			_ = exec.Command("git", "-C", repoRoot, "checkout", "--", ".").Run()
 			pullCmd := exec.Command("git", "-C", repoRoot, "pull", "--ff-only")
 			if pullOut, pErr := pullCmd.CombinedOutput(); pErr == nil {
 				gitUpdated = true
 				emit("Git repository updated: " + strings.TrimSpace(string(pullOut)))
+				// If executable had resided inside legacy linbeam-go/ subfolder before repo root migration,
+				// update exePath to the root binary if present.
+				rootBin := filepath.Join(repoRoot, "linbeam")
+				if !fileExists(exePath) && fileExists(rootBin) {
+					exePath = rootBin
+				}
 			} else {
 				emit(fmt.Sprintf("git pull note: %s", strings.TrimSpace(string(pullOut))))
 			}
@@ -176,22 +210,22 @@ func (m *Manager) UpdateLauncher(emit func(string)) (gitUpdated bool, binaryUpda
 			emit(fmt.Sprintf("git fetch note: %s", strings.TrimSpace(string(out))))
 		}
 
-		// If Go toolchain is installed on the host, recompile the binary from fresh source
 		if goBin, lErr := exec.LookPath("go"); lErr == nil {
-			goModDir := filepath.Join(repoRoot, "linbeam-go")
-			if !fileExists(filepath.Join(goModDir, "go.mod")) && fileExists(filepath.Join(repoRoot, "go.mod")) {
-				goModDir = repoRoot
+			goModDir := repoRoot
+			if !fileExists(filepath.Join(goModDir, "go.mod")) && fileExists(filepath.Join(repoRoot, "linbeam-go", "go.mod")) {
+				goModDir = filepath.Join(repoRoot, "linbeam-go")
 			}
 			if fileExists(filepath.Join(goModDir, "go.mod")) {
 				emit("Host Go compiler detected; rebuilding launcher from latest source...")
-				tmpBin := exePath + ".new"
+				targetBin := filepath.Join(goModDir, "linbeam")
+				tmpBin := targetBin + ".new"
 				buildCmd := exec.Command(goBin, "build", "-ldflags=-s -w", "-o", tmpBin, ".")
 				buildCmd.Dir = goModDir
 				buildCmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
 				if bOut, bErr := buildCmd.CombinedOutput(); bErr == nil && isValidAMD64ELF(tmpBin) {
 					_ = os.Chmod(tmpBin, 0755)
-					if rErr := os.Rename(tmpBin, exePath); rErr == nil {
-						emit("Rebuilt and replaced launcher binary in place.")
+					if rErr := os.Rename(tmpBin, targetBin); rErr == nil {
+						emit("Rebuilt and replaced launcher binary at " + targetBin)
 						return gitUpdated, true, nil
 					}
 				} else if bErr != nil {
@@ -207,15 +241,16 @@ func (m *Manager) UpdateLauncher(emit func(string)) (gitUpdated bool, binaryUpda
 		}
 	}
 
-	// Direct binary update from GitHub Releases or raw main branch
-	downloadURL := resolveLatestBinaryURL()
+	// 3. Standalone binary update from GitHub Releases or raw main branch
+	downloadURL := resolveLatestBinaryURL(false)
 	emit("Downloading latest pre-compiled amd64 launcher from GitHub...")
 	tmpBin := exePath + ".new"
 	if err := downloadFile(downloadURL, tmpBin); err != nil {
-		// Try fallback raw root URL if repo was reorganized to root
 		if err2 := downloadFile(githubRawBinaryRootURL, tmpBin); err2 != nil {
-			_ = os.Remove(tmpBin)
-			return gitUpdated, false, fmt.Errorf("could not download remote binary: %v", err)
+			if err3 := downloadFile(githubRawBinaryLegacyURL, tmpBin); err3 != nil {
+				_ = os.Remove(tmpBin)
+				return gitUpdated, false, fmt.Errorf("could not download remote binary: %v", err)
+			}
 		}
 	}
 
@@ -238,43 +273,70 @@ func (m *Manager) UpdateLauncher(emit func(string)) (gitUpdated bool, binaryUpda
 	return gitUpdated, true, nil
 }
 
-func resolveLatestBinaryURL() string {
+func selectReleaseAssetURL(assets []releaseAsset, preferAppImage bool) string {
+	isArchCompatible := func(lower string) bool {
+		return !strings.Contains(lower, "aarch64") &&
+			!strings.Contains(lower, "arm64") &&
+			!strings.HasSuffix(lower, ".txt") &&
+			!strings.HasSuffix(lower, ".sha256")
+	}
+
+	if preferAppImage {
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.HasSuffix(lower, ".appimage") && isArchCompatible(lower) {
+				return a.BrowserDownloadURL
+			}
+		}
+	} else {
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if !strings.HasSuffix(lower, ".appimage") &&
+				(strings.Contains(lower, "linbeam") || strings.Contains(lower, "linux")) &&
+				isArchCompatible(lower) {
+				return a.BrowserDownloadURL
+			}
+		}
+	}
+
+	for _, a := range assets {
+		lower := strings.ToLower(a.Name)
+		if (strings.Contains(lower, "linbeam") || strings.HasSuffix(lower, ".appimage")) && isArchCompatible(lower) {
+			return a.BrowserDownloadURL
+		}
+	}
+	return ""
+}
+
+func resolveLatestBinaryURL(preferAppImage bool) string {
 	req, err := http.NewRequest("GET", githubLatestReleaseAPI, nil)
 	if err != nil {
-		return githubRawBinaryMainURL
+		return githubRawBinaryRootURL
 	}
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return githubRawBinaryMainURL
+		return githubRawBinaryRootURL
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return githubRawBinaryMainURL
+		return githubRawBinaryRootURL
 	}
 
 	var rel struct {
-		Assets []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
+		Assets []releaseAsset `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return githubRawBinaryMainURL
+		return githubRawBinaryRootURL
 	}
 
-	for _, a := range rel.Assets {
-		lower := strings.ToLower(a.Name)
-		if (strings.Contains(lower, "linbeam") || strings.Contains(lower, "linux")) &&
-			!strings.Contains(lower, "aarch64") &&
-			!strings.Contains(lower, "arm64") {
-			return a.BrowserDownloadURL
-		}
+	if u := selectReleaseAssetURL(rel.Assets, preferAppImage); u != "" {
+		return u
 	}
 
-	return githubRawBinaryMainURL
+	return githubRawBinaryRootURL
 }
 
 func findGitRepoRoot(startDir string) (string, bool) {
