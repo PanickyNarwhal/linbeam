@@ -2,6 +2,8 @@ package installer
 
 import (
 	"archive/zip"
+	"encoding/xml"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,5 +116,133 @@ func TestFindRevuExecutable(t *testing.T) {
 	found, ok := bm.FindRevuExecutable()
 	if !ok || found != revuExe {
 		t.Fatalf("expected %s, got %s (ok=%v)", revuExe, found, ok)
+	}
+}
+
+func assertValidWellFormedXML(t *testing.T, data []byte) {
+	t.Helper()
+	dec := xml.NewDecoder(strings.NewReader(string(data)))
+	for {
+		_, err := dec.Token()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			t.Fatalf("invalid XML produced: %v\nXML:\n%s", err, string(data))
+		}
+	}
+}
+
+func TestPatchUserPreferencesXML(t *testing.T) {
+	cases := []struct {
+		name         string
+		input        string
+		mustPreserve string
+	}{
+		{
+			name:         "empty input generates valid Revu 21 template",
+			input:        "",
+			mustPreserve: "<ScaleUnits>Inches</ScaleUnits>",
+		},
+		{
+			name: "injects Revu SignInMethod into stock MSI UserPreferences.xml",
+			input: `<?xml version="1.0" encoding="utf-8"?>
+<RevuUserPreferences Version="2">
+  <Record Key="ToolChest">
+    <ItemSize>48</ItemSize>
+  </Record>
+  <Record Key="PreferencesDictionary">
+    <General>
+      <RevuAppDefaultModeInt>0</RevuAppDefaultModeInt>
+    </General>
+  </Record>
+</RevuUserPreferences>`,
+			mustPreserve: "<ItemSize>48</ItemSize>",
+		},
+		{
+			name: "overrides ModalBrowser inside existing Revu block while preserving sibling keys",
+			input: `<?xml version="1.0" encoding="utf-8"?>
+<RevuUserPreferences Version="2">
+  <Record Key="PreferencesDictionary">
+    <Revu>
+      <CustomSetting>KeepMe</CustomSetting>
+      <SignInMethod>ModalBrowser</SignInMethod>
+    </Revu>
+  </Record>
+</RevuUserPreferences>`,
+			mustPreserve: "<CustomSetting>KeepMe</CustomSetting>",
+		},
+		{
+			name: "expands self-closing PreferencesDictionary record",
+			input: `<?xml version="1.0" encoding="utf-8"?>
+<RevuUserPreferences Version="2">
+  <Record Key="RecentFileList" />
+  <Record Key="PreferencesDictionary" />
+</RevuUserPreferences>`,
+			mustPreserve: `<Record Key="RecentFileList" />`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := PatchUserPreferencesXML([]byte(tc.input))
+			assertValidWellFormedXML(t, out)
+			s := string(out)
+			if !strings.Contains(s, "<SignInMethod>SystemBrowser</SignInMethod>") {
+				t.Fatalf("expected <SignInMethod>SystemBrowser</SignInMethod>, got:\n%s", s)
+			}
+			if strings.Contains(s, "ModalBrowser") {
+				t.Fatalf("expected ModalBrowser to be replaced, got:\n%s", s)
+			}
+			if tc.mustPreserve != "" && !strings.Contains(s, tc.mustPreserve) {
+				t.Fatalf("expected %q to be preserved, got:\n%s", tc.mustPreserve, s)
+			}
+		})
+	}
+}
+
+func TestEnsureSignInMethodInDriveC(t *testing.T) {
+	driveC := filepath.Join(t.TempDir(), "drive_c")
+	existingRoaming := filepath.Join(driveC, "users", "steamuser", "AppData", "Roaming", "Bluebeam Software", "Bluebeam Revu", "21", "Revu", "UserPreferences.xml")
+	if err := os.MkdirAll(filepath.Dir(existingRoaming), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(driveC, "users", "Public"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	initialXML := `<?xml version="1.0" encoding="utf-8"?>
+<RevuUserPreferences Version="2">
+  <Record Key="PreferencesDictionary">
+    <Revu>
+      <SignInMethod>ModalBrowser</SignInMethod>
+    </Revu>
+  </Record>
+</RevuUserPreferences>`
+	if err := os.WriteFile(existingRoaming, []byte(initialXML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := EnsureSignInMethodInDriveC(driveC)
+	if updated != 2 {
+		t.Fatalf("expected 2 files updated (ProgramData + steamuser), got %d", updated)
+	}
+
+	// Second call should be idempotent (0 files rewritten)
+	if second := EnsureSignInMethodInDriveC(driveC); second != 0 {
+		t.Fatalf("expected second EnsureSignInMethodInDriveC call to rewrite 0 files, got %d", second)
+	}
+
+	roamingBytes, err := os.ReadFile(existingRoaming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(roamingBytes), "<SignInMethod>SystemBrowser</SignInMethod>") {
+		t.Fatalf("expected SystemBrowser in steamuser UserPreferences.xml, got:\n%s", string(roamingBytes))
+	}
+
+	publicPrefs := filepath.Join(driveC, "users", "Public", "AppData", "Roaming", "Bluebeam Software", "Bluebeam Revu", "21", "Revu", "UserPreferences.xml")
+	if fileExists(publicPrefs) {
+		t.Fatal("expected Public profile to be skipped")
 	}
 }

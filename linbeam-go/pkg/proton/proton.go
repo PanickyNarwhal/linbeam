@@ -425,6 +425,37 @@ func downloadFileWithProgress(url, destPath string, expectedSize int64, onProgre
 	return nil
 }
 
+// EnsureHostBrowserWrapper writes a clean-environment helper script that strips Proton/Wine
+// LD_LIBRARY_PATH and preload variables before delegating URLs to the host Linux browser via xdg-open.
+func (e *Engine) EnsureHostBrowserWrapper() (string, error) {
+	if err := os.MkdirAll(e.Config.DataDir, 0755); err != nil {
+		return "", err
+	}
+	scriptPath := filepath.Join(e.Config.DataDir, "open-url.sh")
+	script := `#!/bin/sh
+unset LD_LIBRARY_PATH
+unset LD_PRELOAD
+unset WINEPREFIX
+unset WINEARCH
+unset WINEDLLOVERRIDES
+unset STEAM_COMPAT_DATA_PATH
+unset STEAM_COMPAT_CLIENT_INSTALL_PATH
+if command -v xdg-open >/dev/null 2>&1; then
+    exec xdg-open "$@"
+elif command -v gio >/dev/null 2>&1; then
+    exec gio open "$@"
+fi
+exit 1
+`
+	if existing, err := os.ReadFile(scriptPath); err != nil || string(existing) != script {
+		if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+			return "", err
+		}
+	}
+	_ = os.Chmod(scriptPath, 0755)
+	return scriptPath, nil
+}
+
 // getEnv builds the Wine/Proton environment variables for child processes.
 func (e *Engine) getEnv(runner *RunnerInfo) []string {
 	env := os.Environ()
@@ -442,23 +473,26 @@ func (e *Engine) getEnv(runner *RunnerInfo) []string {
 	currentLD := os.Getenv("LD_LIBRARY_PATH")
 	newLD := fmt.Sprintf("%s:%s:%s", lib64Dir, libDir, currentLD)
 
+	browserWrapper, _ := e.EnsureHostBrowserWrapper()
+
 	// Configure DLL overrides for .NET 4.8, DXVK, UCRT, and disable builtin Gecko mshtml
-	// so Bluebeam uses its FixedVersion WebView2 runtime with sandbox disabled.
+	// while keeping winebrowser.exe enabled so SystemBrowser OAuth sign-in opens the host Linux browser.
 	overrides := map[string]string{
-		"WINEPREFIX":                              pfx,
-		"STEAM_COMPAT_DATA_PATH":                  e.Config.PrefixDir,
-		"WINEARCH":                                "win64",
-		"WINE":                                    runner.WineBin,
-		"WINE64":                                  runner.Wine64Bin,
-		"WINESERVER":                              runner.ServerBin,
-		"PATH":                                    newPath,
-		"LD_LIBRARY_PATH":                         newLD,
-		"WINEDLLOVERRIDES":                        "mscoree=n;mshtml=;d3d11=n,b;dxgi=n,b;d3d9=n,b;ucrtbase=n,b",
-		"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS":   "--no-sandbox --disable-gpu",
-		"WINEESYNC":                               "1",
-		"WINEFSYNC":                               "1",
-		"PROTON_NO_ESYNC":                         "0",
-		"WINEDEBUG":                               "-all",
+		"WINEPREFIX":                            pfx,
+		"STEAM_COMPAT_DATA_PATH":                e.Config.PrefixDir,
+		"WINEARCH":                              "win64",
+		"WINE":                                  runner.WineBin,
+		"WINE64":                                runner.Wine64Bin,
+		"WINESERVER":                            runner.ServerBin,
+		"PATH":                                  newPath,
+		"LD_LIBRARY_PATH":                       newLD,
+		"WINEDLLOVERRIDES":                      "mscoree=n;mshtml=;winemenubuilder.exe=d;d3d11=n,b;dxgi=n,b;d3d9=n,b;ucrtbase=n,b",
+		"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--no-sandbox --disable-gpu",
+		"BROWSER":                               browserWrapper,
+		"WINEESYNC":                             "1",
+		"WINEFSYNC":                             "1",
+		"PROTON_NO_ESYNC":                       "0",
+		"WINEDEBUG":                             "-all",
 	}
 
 	filtered := make([]string, 0, len(env)+len(overrides))
@@ -938,7 +972,113 @@ func (e *Engine) ApplyBluebeamRegistryOverrides(onLine func(string)) error {
 	_ = e.RunWineStream(onLine, "reg", "add", desktopKey, "/v", "FontSmoothingType", "/t", "REG_DWORD", "/d", "2", "/f")
 	_ = e.RunWineStream(onLine, "reg", "add", desktopKey, "/v", "FontSmoothingGamma", "/t", "REG_DWORD", "/d", "1400", "/f")
 
+	// 5. Configure SystemBrowser OAuth sign-in, WineBrowser clean-env wrapper, revusignin:// URL protocol,
+	// .NET Framework 4.8 StrongCrypto / TLS 1.2, and WebView2 Group Policy arguments.
+	_ = e.ApplySignInAndBrowserRegistry(onLine)
+
 	return nil
+}
+
+const signInRegistryStampFile = "linbeam_signin_v2.stamp"
+
+// ApplySignInAndBrowserRegistry configures WineBrowser, http/https shell handlers, revusignin://
+// and openspinrevu:// URL protocols, SCHANNEL + .NET StrongCrypto TLS 1.2, and WebView2 policy flags
+// in a single regedit /S import.
+func (e *Engine) ApplySignInAndBrowserRegistry(onLine func(string)) error {
+	wrapperPath, _ := e.EnsureHostBrowserWrapper()
+	escapedWrapper := strings.ReplaceAll(strings.ReplaceAll(wrapperPath, `\`, `\\`), `"`, `\"`)
+	browsersVal := "xdg-open,x-www-browser,firefox,google-chrome,brave-browser"
+	if escapedWrapper != "" {
+		browsersVal = escapedWrapper + "," + browsersVal
+	}
+
+	regContent := fmt.Sprintf(`Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Wine\WineBrowser]
+"Browsers"="%s"
+
+[HKEY_CLASSES_ROOT\http\shell\open\command]
+@="\"C:\\windows\\system32\\winebrowser.exe\" \"%%1\""
+
+[HKEY_CLASSES_ROOT\https\shell\open\command]
+@="\"C:\\windows\\system32\\winebrowser.exe\" \"%%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\http\shell\open\command]
+@="\"C:\\windows\\system32\\winebrowser.exe\" \"%%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\https\shell\open\command]
+@="\"C:\\windows\\system32\\winebrowser.exe\" \"%%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\revusignin]
+@="URL:Revu SignIn Protocol"
+"URL Protocol"=""
+
+[HKEY_CURRENT_USER\Software\Classes\revusignin\shell\open\command]
+@="\"C:\\Program Files\\Bluebeam Software\\Bluebeam Revu\\21\\Revu\\Revu.exe\" \"%%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\openspinrevu]
+@="URL:OpenSpinRevu Protocol"
+"URL Protocol"=""
+
+[HKEY_CURRENT_USER\Software\Classes\openspinrevu\shell\open\command]
+@="\"C:\\Program Files\\Bluebeam Software\\Bluebeam Revu\\21\\Revu\\Revu.exe\" \"%%1\""
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Client]
+"Enabled"=dword:00000001
+"DisabledByDefault"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client]
+"Enabled"=dword:00000001
+"DisabledByDefault"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\.NETFramework\v4.0.30319]
+"SchUseStrongCrypto"=dword:00000001
+"SystemDefaultTlsVersions"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319]
+"SchUseStrongCrypto"=dword:00000001
+"SystemDefaultTlsVersions"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments]
+"*"="--no-sandbox --disable-gpu"
+
+[HKEY_CURRENT_USER\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments]
+"*"="--no-sandbox --disable-gpu"
+`, browsersVal)
+
+	if err := os.MkdirAll(e.Config.CacheDir, 0755); err != nil {
+		return err
+	}
+	regPath := filepath.Join(e.Config.CacheDir, "linbeam-signin.reg")
+	if err := os.WriteFile(regPath, []byte(regContent), 0644); err != nil {
+		return err
+	}
+
+	if err := e.RunWineStream(onLine, "regedit", "/S", e.UnixToWinePath(regPath)); err != nil {
+		return err
+	}
+
+	winDir := filepath.Join(e.DriveCPath(), "windows")
+	if dirExists(winDir) {
+		_ = os.WriteFile(filepath.Join(winDir, signInRegistryStampFile), []byte("ok\n"), 0644)
+	}
+	return nil
+}
+
+// EnsureSignInRegistryConfigured applies the Sign-In / WineBrowser / TLS 1.2 registry configuration
+// once on existing prefixes if the v2 stamp file is not yet present.
+func (e *Engine) EnsureSignInRegistryConfigured() {
+	_, _ = e.EnsureHostBrowserWrapper()
+	winDir := filepath.Join(e.DriveCPath(), "windows")
+	if !dirExists(winDir) {
+		return
+	}
+	stamp := filepath.Join(winDir, signInRegistryStampFile)
+	if fileExists(stamp) {
+		return
+	}
+	_ = e.ApplySignInAndBrowserRegistry(nil)
+	_ = e.WaitServer()
 }
 
 // ApplyDarkTheme sets dark mode and dark title bars in the Wine prefix.
@@ -958,6 +1098,9 @@ func (e *Engine) RunWine(exePath string, args ...string) error {
 
 	cmdArgs := append([]string{exePath}, args...)
 	cmd := exec.Command(runner.WineBin, cmdArgs...)
+	if filepath.IsAbs(exePath) && dirExists(filepath.Dir(exePath)) {
+		cmd.Dir = filepath.Dir(exePath)
+	}
 	cmd.Env = e.getEnv(runner)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

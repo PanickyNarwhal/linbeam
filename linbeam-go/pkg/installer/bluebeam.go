@@ -2,17 +2,22 @@ package installer
 
 import (
 	"archive/zip"
+	"bytes"
 	_ "embed"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/PanickyNarwhal/linbeam/pkg/config"
+	"github.com/PanickyNarwhal/linbeam/pkg/desktop"
 	"github.com/PanickyNarwhal/linbeam/pkg/proton"
 )
 
@@ -605,6 +610,12 @@ func (bm *BluebeamManager) ConfigurePostInstall(revuDir, extractDir, bpxProfileP
 		emit("Verified Safe.enx license configuration file in ProgramData.")
 	}
 
+	if updated := bm.EnsureUserPreferencesSignInMethod(); updated > 0 {
+		emit(fmt.Sprintf("Configured SystemBrowser OAuth sign-in in %d UserPreferences.xml file(s).", updated))
+	} else {
+		emit("Verified UserPreferences.xml SignInMethod=SystemBrowser for native Linux browser OAuth.")
+	}
+
 	if bpxProfilePath != "" && fileExists(bpxProfilePath) {
 		bpxName := filepath.Base(bpxProfilePath)
 		progDataDir := filepath.Join(driveC, "ProgramData", "Bluebeam Software", "Bluebeam Revu", "21", "Revu")
@@ -709,7 +720,207 @@ func (bm *BluebeamManager) readMsiLogFailure() string {
 	return "Check C:\\windows\\temp\\revu_install.log inside the prefix for details."
 }
 
-// Launch starts Bluebeam Revu 21 inside the Proton-GE prefix, converting any Linux file arguments to Wine paths.
+const defaultUserPreferencesXML = `<?xml version="1.0" encoding="utf-8"?>
+<RevuUserPreferences Version="2">
+  <Record Key="ProfileManager">
+    <Path />
+  </Record>
+  <Record Key="ToolChest">
+    <ItemSize>32</ItemSize>
+  </Record>
+  <Record Key="Search">
+    <CaseSensitive>False</CaseSensitive>
+    <WholeWordsOnly>False</WholeWordsOnly>
+  </Record>
+  <Record Key="RecentFileList" />
+  <Record Key="PreferencesDictionary">
+    <PDFGraphics>
+      <BlendModes>True</BlendModes>
+    </PDFGraphics>
+    <Rulers>
+      <ScaleUnits>Inches</ScaleUnits>
+    </Rulers>
+    <DrawBuffer>
+      <Sweetener>False</Sweetener>
+    </DrawBuffer>
+    <QuickTiff>
+      <Dpi>300</Dpi>
+    </QuickTiff>
+    <StartPanel>
+      <DISPLAY_START_PAGE>True</DISPLAY_START_PAGE>
+    </StartPanel>
+    <Rendering>
+      <BlendModes>True</BlendModes>
+      <FillAntiAlias>True</FillAntiAlias>
+      <PageDimmer>40</PageDimmer>
+    </Rendering>
+    <Navigation>
+      <InvertMouseWheel>False</InvertMouseWheel>
+      <MouseWheelZoomSingle>True</MouseWheelZoomSingle>
+      <MouseWheelZoomContinuous>False</MouseWheelZoomContinuous>
+    </Navigation>
+    <Markup>
+      <MarkupDimmer>40</MarkupDimmer>
+      <TabletPenInputCAPS>True</TabletPenInputCAPS>
+    </Markup>
+    <General>
+      <RevuAppDefaultModeInt>0</RevuAppDefaultModeInt>
+      <RevuAppLastUsedModeInt>1</RevuAppLastUsedModeInt>
+    </General>
+    <Revu>
+      <SignInMethod>SystemBrowser</SignInMethod>
+    </Revu>
+  </Record>
+  <Record Key="PrintDialog" />
+  <Record Key="ShowAgainDialogs" />
+</RevuUserPreferences>
+`
+
+var (
+	reSelfClosingPrefsDict = regexp.MustCompile(`(?is)<Record\s+Key="PreferencesDictionary"\s*/>`)
+	reOpenPrefsDict        = regexp.MustCompile(`(?is)<Record\s+Key="PreferencesDictionary"\s*>`)
+	reSelfClosingRevu      = regexp.MustCompile(`(?is)<Revu\s*/>`)
+	reOpenRevuBlock        = regexp.MustCompile(`(?is)<Revu(\s[^>]*)?>(.*?)</Revu>`)
+	reSignInMethodElem     = regexp.MustCompile(`(?is)<SignInMethod(\s[^>]*)?>.*?</SignInMethod>`)
+)
+
+// PatchUserPreferencesXML ensures <Revu><SignInMethod>SystemBrowser</SignInMethod></Revu>
+// is present inside <Record Key="PreferencesDictionary"> while preserving all existing preferences.
+// Setting Revu.SignInMethod=SystemBrowser makes Bluebeam Revu 21 use its built-in OAuth PKCE flow
+// in the native Linux web browser (with revusignin:// callback) instead of embedded WebView2 ModalBrowser.
+func PatchUserPreferencesXML(xmlBytes []byte) []byte {
+	trimmed := bytes.TrimSpace(xmlBytes)
+	if len(trimmed) == 0 || !bytes.Contains(trimmed, []byte("<RevuUserPreferences")) {
+		return []byte(defaultUserPreferencesXML)
+	}
+
+	s := string(xmlBytes)
+
+	// 1. Expand self-closing <Record Key="PreferencesDictionary" /> if present
+	if reSelfClosingPrefsDict.MatchString(s) {
+		replacement := "<Record Key=\"PreferencesDictionary\">\n    <Revu>\n      <SignInMethod>SystemBrowser</SignInMethod>\n    </Revu>\n  </Record>"
+		return []byte(reSelfClosingPrefsDict.ReplaceAllString(s, replacement))
+	}
+
+	// 2. Patch inside existing <Record Key="PreferencesDictionary">...</Record>
+	if loc := reOpenPrefsDict.FindStringIndex(s); loc != nil {
+		bodyStart := loc[1]
+		relClose := strings.Index(s[bodyStart:], "</Record>")
+		if relClose >= 0 {
+			bodyEnd := bodyStart + relClose
+			dictBody := s[bodyStart:bodyEnd]
+
+			var newDictBody string
+			if reSelfClosingRevu.MatchString(dictBody) {
+				newDictBody = reSelfClosingRevu.ReplaceAllString(dictBody, "<Revu>\n      <SignInMethod>SystemBrowser</SignInMethod>\n    </Revu>")
+			} else if revuLoc := reOpenRevuBlock.FindStringIndex(dictBody); revuLoc != nil {
+				revuBlock := dictBody[revuLoc[0]:revuLoc[1]]
+				var updatedRevu string
+				if reSignInMethodElem.MatchString(revuBlock) {
+					updatedRevu = reSignInMethodElem.ReplaceAllString(revuBlock, "<SignInMethod>SystemBrowser</SignInMethod>")
+				} else {
+					gtIdx := strings.IndexByte(revuBlock, '>')
+					updatedRevu = revuBlock[:gtIdx+1] + "\n      <SignInMethod>SystemBrowser</SignInMethod>" + revuBlock[gtIdx+1:]
+				}
+				newDictBody = dictBody[:revuLoc[0]] + updatedRevu + dictBody[revuLoc[1]:]
+			} else {
+				trimmedRight := strings.TrimRight(dictBody, " \t\r\n")
+				newDictBody = trimmedRight + "\n    <Revu>\n      <SignInMethod>SystemBrowser</SignInMethod>\n    </Revu>\n  "
+			}
+
+			return []byte(s[:bodyStart] + newDictBody + s[bodyEnd:])
+		}
+	}
+
+	// 3. Fallback: insert <Record Key="PreferencesDictionary"> before </RevuUserPreferences>
+	if closeRoot := strings.LastIndex(s, "</RevuUserPreferences>"); closeRoot >= 0 {
+		insert := "  <Record Key=\"PreferencesDictionary\">\n    <Revu>\n      <SignInMethod>SystemBrowser</SignInMethod>\n    </Revu>\n  </Record>\n"
+		return []byte(s[:closeRoot] + insert + s[closeRoot:])
+	}
+
+	return []byte(defaultUserPreferencesXML)
+}
+
+// EnsureSignInMethodInDriveC updates or creates UserPreferences.xml across ProgramData and all
+// Wine user profiles in driveC so Revu.SignInMethod is set to SystemBrowser.
+func EnsureSignInMethodInDriveC(driveC string) int {
+	if !dirExists(driveC) {
+		return 0
+	}
+
+	updatedCount := 0
+	patchFile := func(path string, seedBytes []byte) []byte {
+		existing, err := os.ReadFile(path)
+		source := existing
+		if err != nil && len(seedBytes) > 0 {
+			source = seedBytes
+		}
+		patched := PatchUserPreferencesXML(source)
+		if err != nil || !bytes.Equal(existing, patched) {
+			if mkErr := os.MkdirAll(filepath.Dir(path), 0755); mkErr == nil {
+				if wErr := os.WriteFile(path, patched, 0644); wErr == nil {
+					updatedCount++
+				}
+			}
+		}
+		return patched
+	}
+
+	progDataPrefs := filepath.Join(driveC, "ProgramData", "Bluebeam Software", "Bluebeam Revu", "21", "Revu", "UserPreferences.xml")
+	templateBytes := patchFile(progDataPrefs, nil)
+
+	usersDir := filepath.Join(driveC, "users")
+	entries, err := os.ReadDir(usersDir)
+	if err != nil {
+		return updatedCount
+	}
+
+	for _, u := range entries {
+		name := u.Name()
+		if strings.EqualFold(name, "Public") || strings.EqualFold(name, "All Users") || strings.EqualFold(name, "Default User") {
+			continue
+		}
+		userPath := filepath.Join(usersDir, name)
+		if !dirExists(userPath) {
+			continue
+		}
+
+		bbRoamingRoot := filepath.Join(userPath, "AppData", "Roaming", "Bluebeam Software")
+		seenPaths := make(map[string]bool)
+		if dirExists(bbRoamingRoot) {
+			_ = filepath.WalkDir(bbRoamingRoot, func(p string, d fs.DirEntry, walkErr error) error {
+				if walkErr == nil && !d.IsDir() && strings.EqualFold(d.Name(), "UserPreferences.xml") {
+					seenPaths[p] = true
+					patchFile(p, templateBytes)
+				}
+				return nil
+			})
+		}
+
+		standardUserPrefs := filepath.Join(bbRoamingRoot, "Bluebeam Revu", "21", "Revu", "UserPreferences.xml")
+		if !seenPaths[standardUserPrefs] {
+			patchFile(standardUserPrefs, templateBytes)
+		}
+	}
+
+	return updatedCount
+}
+
+// EnsureUserPreferencesSignInMethod configures SystemBrowser sign-in across the active prefix.
+func (bm *BluebeamManager) EnsureUserPreferencesSignInMethod() int {
+	return EnsureSignInMethodInDriveC(bm.Engine.DriveCPath())
+}
+
+func isRevuRunning() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	out, err := exec.Command("pgrep", "-f", "Revu.exe").Output()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}
+
+// Launch starts Bluebeam Revu 21 inside the Proton-GE prefix, converting any Linux file arguments
+// or file:// URLs to Wine paths, while forwarding revusignin:// OAuth callbacks directly to Revu.exe.
 func (bm *BluebeamManager) Launch(args ...string) error {
 	exePath, ok := bm.FindRevuExecutable()
 	if !ok {
@@ -723,15 +934,44 @@ func (bm *BluebeamManager) Launch(args ...string) error {
 	}
 
 	var wineArgs []string
-	for _, a := range args {
-		if a == "" {
+	isProtocolCallback := false
+
+	for _, raw := range args {
+		a := strings.TrimSpace(raw)
+		if a == "" || a == "%u" || a == "%U" || a == "%f" || a == "%F" {
 			continue
 		}
+
+		lower := strings.ToLower(a)
+		if strings.HasPrefix(lower, "revusignin:") ||
+			strings.HasPrefix(lower, "openspinrevu:") ||
+			strings.HasPrefix(lower, "bluebeam:") ||
+			strings.HasPrefix(lower, "bbstudio:") {
+			isProtocolCallback = true
+			wineArgs = append(wineArgs, a)
+			continue
+		}
+
+		if strings.HasPrefix(lower, "file://") {
+			if parsed, err := url.Parse(a); err == nil && parsed.Path != "" && fileExists(parsed.Path) {
+				wineArgs = append(wineArgs, bm.Engine.UnixToWinePath(parsed.Path))
+				continue
+			}
+		}
+
 		if strings.HasPrefix(a, "/") && fileExists(a) {
 			wineArgs = append(wineArgs, bm.Engine.UnixToWinePath(a))
 		} else {
 			wineArgs = append(wineArgs, a)
 		}
+	}
+
+	// Before primary launch (not an OAuth callback into an already-running Revu.exe),
+	// self-heal XDG revusignin:// handler, WineBrowser/TLS 1.2 registry, and SystemBrowser SignInMethod.
+	if !isProtocolCallback && !isRevuRunning() {
+		desktop.EnsureProtocolHandlers()
+		bm.Engine.EnsureSignInRegistryConfigured()
+		bm.EnsureUserPreferencesSignInMethod()
 	}
 
 	return bm.Engine.RunWine(exePath, wineArgs...)

@@ -6,13 +6,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 //go:embed revu21.png
 var revu21IconPNG []byte
 
-// CreateShortcut installs the Linux .desktop entries, official Bluebeam Revu 21 PNG icon, and MIME/protocol associations.
+// CreateShortcut installs the Linux .desktop entries, official Bluebeam Revu 21 PNG icon,
+// and XDG MIME/protocol associations (including revusignin:// OAuth sign-in callbacks).
 func CreateShortcut() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to resolve current executable path: %w", err)
@@ -53,12 +60,12 @@ func CreateShortcut() error {
 Name=Bluebeam Revu 21
 GenericName=PDF CAD & Markup Editor
 Comment=Run Bluebeam Revu 21 on Linux via Proton-GE
-Exec="%s" launch %%F
+Exec="%s" launch %%U
 Terminal=false
 Type=Application
 Icon=%s
 Categories=Office;Viewer;Engineering;Graphics;
-MimeType=application/pdf;x-scheme-handler/bluebeam;x-scheme-handler/bbstudio;
+MimeType=application/pdf;x-scheme-handler/revusignin;x-scheme-handler/openspinrevu;x-scheme-handler/bluebeam;x-scheme-handler/bbstudio;
 StartupWMClass=Revu.exe
 `, exePath, iconPath)
 
@@ -79,12 +86,37 @@ Categories=Utility;System;
 
 	_ = os.WriteFile(mgrDesktopPath, []byte(mgrContent), 0755)
 
-	_ = exec.Command("xdg-mime", "default", "linbeam.desktop", "x-scheme-handler/bluebeam").Run()
-	_ = exec.Command("xdg-mime", "default", "linbeam.desktop", "x-scheme-handler/bbstudio").Run()
+	schemeHandlers := []string{
+		"x-scheme-handler/revusignin",
+		"x-scheme-handler/openspinrevu",
+		"x-scheme-handler/bluebeam",
+		"x-scheme-handler/bbstudio",
+	}
+	for _, scheme := range schemeHandlers {
+		_ = exec.Command("xdg-mime", "default", "linbeam.desktop", scheme).Run()
+	}
+
 	_ = exec.Command("gtk-update-icon-cache", "-f", "-t", filepath.Join(home, ".local", "share", "icons", "hicolor")).Run()
 	_ = exec.Command("update-desktop-database", appsDir).Run()
 
 	return nil
+}
+
+// EnsureProtocolHandlers ensures linbeam.desktop exists and has x-scheme-handler/revusignin
+// registered with XDG so native Linux browser OAuth callbacks return to Bluebeam Revu 21.
+func EnsureProtocolHandlers() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	revuDesktopPath := filepath.Join(home, ".local", "share", "applications", "linbeam.desktop")
+	data, err := os.ReadFile(revuDesktopPath)
+	if err != nil || !strings.Contains(string(data), "x-scheme-handler/revusignin") || !strings.Contains(string(data), "%U") {
+		_ = CreateShortcut()
+	}
 }
 
 // ShortcutExists returns true if ~/.local/share/applications/linbeam.desktop exists.

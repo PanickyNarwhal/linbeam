@@ -127,6 +127,20 @@ func (m *Manager) UpdateAll(updateBluebeamMSI bool, progress func(stage string, 
 		res.ShortcutUpdated = true
 	}
 
+	// If a newer launcher binary was written to disk during this run, invoke its repair & shortcut
+	// commands so any newly added prefix or protocol migrations take effect immediately.
+	if res.LauncherUpdated {
+		if exePath, exeErr := os.Executable(); exeErr == nil {
+			if resolved, symErr := filepath.EvalSymlinks(exePath); symErr == nil {
+				exePath = resolved
+			}
+			_ = exec.Command(exePath, "shortcut").Run()
+			if dirExists(m.Engine.DriveCPath()) {
+				_ = exec.Command(exePath, "repair").Run()
+			}
+		}
+	}
+
 	emit("Update complete. Launcher, Proton-GE (amd64), and desktop integration are up to date.", 100)
 	return res, nil
 }

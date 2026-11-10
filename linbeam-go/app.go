@@ -327,6 +327,7 @@ func (s *AppServer) handleRepairPostInstall(w http.ResponseWriter, r *http.Reque
 		s.bluebeam.ConfigurePostInstall(filepath.Dir(exePath), extractDir, req.BPXProfile, func(line string) {
 			s.broadcast(progressEvent{Stage: line, Percent: 75})
 		})
+		_ = desktop.CreateShortcut()
 		s.broadcast(progressEvent{Stage: "Post-install repair complete!", Percent: 100, Done: true})
 	}()
 
@@ -471,10 +472,8 @@ func (s *AppServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func openAppWindow(url string) {
 	appBrowsers := []string{
-		"google-chrome",
 		"google-chrome-stable",
-		"chromium",
-		"chromium-browser",
+		"google-chrome",
 		"brave-browser",
 		"microsoft-edge",
 		"vivaldi",

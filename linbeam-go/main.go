@@ -28,6 +28,7 @@ func main() {
 
 	args := os.Args[1:]
 	if len(args) == 0 {
+		desktop.EnsureProtocolHandlers()
 		if err := app.StartGUI(); err != nil {
 			fmt.Fprintf(os.Stderr, "GUI error: %v\n", err)
 			os.Exit(1)
@@ -35,10 +36,13 @@ func main() {
 		return
 	}
 
-	// Direct PDF / BPX / Studio protocol launch
+	// Direct PDF / BPX / OAuth Sign-In / Studio protocol launch
 	firstLower := strings.ToLower(args[0])
 	if strings.HasSuffix(firstLower, ".pdf") ||
 		strings.HasSuffix(firstLower, ".bpx") ||
+		strings.HasPrefix(firstLower, "file://") ||
+		strings.HasPrefix(firstLower, "revusignin:") ||
+		strings.HasPrefix(firstLower, "openspinrevu:") ||
 		strings.HasPrefix(firstLower, "bluebeam:") ||
 		strings.HasPrefix(firstLower, "bbstudio:") {
 		if err := bm.Launch(args...); err != nil {
@@ -51,6 +55,7 @@ func main() {
 	cmd := args[0]
 	switch cmd {
 	case "--gui", "gui", "manage":
+		desktop.EnsureProtocolHandlers()
 		if err := app.StartGUI(); err != nil {
 			fmt.Fprintf(os.Stderr, "GUI error: %v\n", err)
 			os.Exit(1)
@@ -116,6 +121,7 @@ func main() {
 		bm.ConfigurePostInstall(filepath.Dir(exePath), extractDir, payloads.BPXProfile, func(line string) {
 			fmt.Println(line)
 		})
+		_ = desktop.CreateShortcut()
 		fmt.Println("Post-install repair complete.")
 
 	case "winetricks":
