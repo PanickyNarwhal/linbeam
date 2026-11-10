@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linbeam — Bluebeam Revu 21 on Linux</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --surface: #131b29;
+    --surface-hover: #1b263b;
+    --border: #23314b;
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --accent: #0ea5e9;
+    --accent-hover: #0284c7;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--surface);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo {
+    width: 38px;
+    height: 38px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #0284c7, #0369a1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 19px;
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+  }
+
+  .brand h1 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .brand span {
+    font-size: 12px;
+    color: var(--text-muted);
+    display: block;
+  }
+
+  .status-badge {
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .status-badge.ready {
+    background: rgba(34, 197, 94, 0.14);
+    border-color: rgba(34, 197, 94, 0.4);
+    color: var(--success);
+  }
+
+  main {
+    flex: 1;
+    max-width: 780px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .steps-nav {
+    display: flex;
+    gap: 10px;
+  }
+
+  .step-pill {
+    flex: 1;
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .step-pill.active {
+    border-color: var(--accent);
+    color: var(--text);
+    background: rgba(14, 165, 233, 0.12);
+  }
+
+  .step-pill.done {
+    border-color: rgba(34, 197, 94, 0.4);
+    color: var(--success);
+  }
+
+  .step-num {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px;
+    display: none;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .card.active {
+    display: flex;
+  }
+
+  .card h2 {
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .card p {
+    font-size: 13.5px;
+    color: var(--text-muted);
+  }
+
+  label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 5px;
+    display: block;
+  }
+
+  select, input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 13.5px;
+    outline: none;
+  }
+
+  select:focus, input[type="text"]:focus {
+    border-color: var(--accent);
+  }
+
+  .btn-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  button {
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .btn-secondary {
+    background: var(--surface-hover);
+    border-color: var(--border);
+    color: var(--text);
+  }
+
+  .btn-secondary:hover:not(:disabled) {
+    background: #24334d;
+  }
+
+  .btn-success {
+    background: var(--success);
+    color: #052e16;
+  }
+
+  .btn-danger {
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.35);
+    color: var(--danger);
+  }
+
+  .progress-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .progress-box.visible {
+    display: flex;
+  }
+
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+
+  .progress-bar-bg {
+    width: 100%;
+    height: 8px;
+    background: var(--surface);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), #38bdf8);
+    transition: width 0.25s ease;
+  }
+
+  .log-console {
+    background: #06090f;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11.5px;
+    color: #cbd5e1;
+    max-height: 190px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .info-item {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px;
+  }
+
+  .info-item .k {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .info-item .v {
+    font-size: 12.5px;
+    font-weight: 500;
+    margin-top: 3px;
+    word-break: break-all;
+  }
+
+  .payload-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .pill {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+
+  .pill.found {
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.35);
+    color: #4ade80;
+  }
+
+  hr.divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="logo">B</div>
+    <div>
+      <h1>Linbeam</h1>
+      <span>Bluebeam Revu 21 on Linux via Proton-GE</span>
+    </div>
+  </div>
+  <div id="globalStatus" class="status-badge">Checking...</div>
+</header>
+
+<main>
+  <div class="steps-nav">
+    <div id="navStep1" class="step-pill active" onclick="showStep(1)">
+      <span class="step-num">1</span> Proton-GE Engine
+    </div>
+    <div id="navStep2" class="step-pill" onclick="showStep(2)">
+      <span class="step-num">2</span> Install Bluebeam Revu 21
+    </div>
+    <div id="navStep3" class="step-pill" onclick="showStep(3)">
+      <span class="step-num">3</span> Launch & Manage
+    </div>
+  </div>
+
+  <!-- STEP 1: Proton-GE -->
+  <div id="step1" class="card active">
+    <h2>Step 1: Select or Download Proton-GE</h2>
+    <p>Bluebeam Revu 21 uses 64-bit .NET Framework 4.8, WPF, Direct3D 11, and WebView2. Proton-GE provides bundled DXVK over Vulkan and modern Wine compatibility without requiring Steam.</p>
+
+    <div>
+      <label for="runnerSelect">Detected Proton / Wine Runners</label>
+      <select id="runnerSelect" onchange="selectRunner(this.value)">
+        <option value="">Scanning...</option>
+      </select>
+    </div>
+
+    <div class="btn-row">
+      <button id="btnDownloadProton" class="btn-primary" onclick="downloadProton()">
+        ⬇ Download Latest Proton-GE
+      </button>
+      <button class="btn-secondary" onclick="refreshState()">
+        ↻ Rescan Runners
+      </button>
+      <button id="btnNextStep1" class="btn-secondary" style="margin-left:auto" onclick="showStep(2)">
+        Next Step →
+      </button>
+    </div>
+  </div>
+
+  <!-- STEP 2: Install Bluebeam Revu 21 -->
+  <div id="step2" class="card">
+    <h2>Step 2: Patch & Install Bluebeam Revu 21</h2>
+    <p>Linbeam automatically patches the Bluebeam MSI to bypass failing InstallShield PowerShell custom actions, installs VC++ 2015–2022 & .NET 4.8, unpacks the bundled WebView2 runtime, and generates Safe.enx.</p>
+
+    <div>
+      <label>Auto-Detected Payloads</label>
+      <div id="payloadPills" class="payload-pills"></div>
+    </div>
+
+    <div>
+      <label for="revuMsiInput">Bluebeam Revu 21 MSI Path (Required)</label>
+      <input type="text" id="revuMsiInput" placeholder="/path/to/payloads/Bluebeam Revu x64 21.msi" />
+    </div>
+
+    <div>
+      <label for="ocrMsiInput">Bluebeam OCR 21 MSI Path (Optional)</label>
+      <input type="text" id="ocrMsiInput" placeholder="/path/to/payloads/BluebeamOCR x64 21.msi" />
+    </div>
+
+    <div>
+      <label for="bpxInput">Custom .bpx Profile Path (Optional, e.g. GilmoreHomesStandard.bpx)</label>
+      <input type="text" id="bpxInput" placeholder="/path/to/payloads/GilmoreHomesStandard.bpx" />
+    </div>
+
+    <div class="btn-row">
+      <button id="btnInstallFull" class="btn-primary" onclick="installBluebeam()">
+        🚀 Patch & Install Bluebeam Revu 21
+      </button>
+      <button id="btnInstallPrereqs" class="btn-secondary" onclick="installPrereqs()">
+        ⚙ Install Prerequisites Only (.NET 4.8 + VC++)
+      </button>
+      <button class="btn-secondary" style="margin-left:auto" onclick="showStep(3)">
+        Skip / Next →
+      </button>
+    </div>
+  </div>
+
+  <!-- STEP 3: Launch & Manage -->
+  <div id="step3" class="card">
+    <h2>Step 3: Ready to Launch</h2>
+    <p>Bluebeam Revu 21 is configured inside its dedicated Proton-GE prefix with DXVK and WebView2 sandbox overrides.</p>
+
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="k">Active Runner</div>
+        <div id="infoRunner" class="v">—</div>
+      </div>
+      <div class="info-item">
+        <div class="k">Installation Status</div>
+        <div id="infoInstalled" class="v">—</div>
+      </div>
+      <div class="info-item">
+        <div class="k">Proton Prefix</div>
+        <div id="infoPrefix" class="v">—</div>
+      </div>
+      <div class="info-item">
+        <div class="k">Executable</div>
+        <div id="infoExe" class="v">—</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button id="btnLaunch" class="btn-success" onclick="launchBluebeam()">
+        ▶ Launch Bluebeam Revu 21
+      </button>
+      <button id="btnShortcut" class="btn-secondary" onclick="createShortcut()">
+        🖥 Create Desktop & PDF Shortcut
+      </button>
+    </div>
+
+    <hr class="divider">
+
+    <label>Prefix & Troubleshooting Tools</label>
+    <div class="btn-row">
+      <button class="btn-secondary" onclick="openWinecfg()">Winecfg</button>
+      <button class="btn-secondary" onclick="repairPostInstall()">Re-run WebView2 & Safe.enx Fix</button>
+      <button class="btn-secondary" onclick="killWine()">Stop Wine Processes</button>
+      <button class="btn-danger" onclick="resetPrefix()">Reset Prefix</button>
+    </div>
+  </div>
+
+  <!-- Shared Progress & Streaming Console -->
+  <div id="progressBox" class="progress-box">
+    <div class="progress-header">
+      <span id="progressStage">Working...</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-bar-bg">
+      <div id="progressFill" class="progress-bar-fill"></div>
+    </div>
+    <div id="logConsole" class="log-console"></div>
+  </div>
+</main>
+
+<script>
+  let appState = {};
+  let activeSSE = null;
+
+  function showStep(n) {
+    [1, 2, 3].forEach(i => {
+      document.getElementById('step' + i).classList.toggle('active', i === n);
+      document.getElementById('navStep' + i).classList.toggle('active', i === n);
+    });
+  }
+
+  async function refreshState() {
+    try {
+      const res = await fetch('/api/status');
+      appState = await res.json();
+      renderState();
+    } catch (e) {
+      console.error('Failed to fetch status:', e);
+    }
+  }
+
+  function renderState() {
+    const badge = document.getElementById('globalStatus');
+    if (appState.revu_installed) {
+      badge.textContent = 'Ready to Launch';
+      badge.className = 'status-badge ready';
+    } else if (appState.active_runner) {
+      badge.textContent = 'Runner Ready • Setup Needed';
+      badge.className = 'status-badge';
+    } else {
+      badge.textContent = 'Proton-GE Required';
+      badge.className = 'status-badge';
+    }
+
+    const sel = document.getElementById('runnerSelect');
+    sel.innerHTML = '';
+    if (!appState.runners || appState.runners.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No runners found — click Download Latest Proton-GE below';
+      sel.appendChild(opt);
+    } else {
+      appState.runners.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.name;
+        opt.textContent = `${r.name} (${r.source})`;
+        if (appState.active_runner && appState.active_runner.name === r.name) {
+          opt.selected = true;
+        }
+        sel.appendChild(opt);
+      });
+    }
+
+    // Payloads
+    const p = appState.payloads || {};
+    const pills = document.getElementById('payloadPills');
+    pills.innerHTML = '';
+    const items = [
+      { label: 'Revu 21 MSI', path: p.revu_msi },
+      { label: 'OCR 21 MSI', path: p.ocr_msi },
+      { label: 'vc_redist.x64', path: p.vcredist_x64 },
+      { label: 'vc_redist.x86', path: p.vcredist_x86 },
+      { label: '.bpx Profile', path: p.bpx_profile },
+    ];
+    items.forEach(it => {
+      const el = document.createElement('span');
+      el.className = 'pill' + (it.path ? ' found' : '');
+      el.textContent = (it.path ? '✓ ' : '○ ') + it.label;
+      if (it.path) el.title = it.path;
+      pills.appendChild(el);
+    });
+
+    const revuIn = document.getElementById('revuMsiInput');
+    const ocrIn = document.getElementById('ocrMsiInput');
+    const bpxIn = document.getElementById('bpxInput');
+    if (!revuIn.value && p.revu_msi) revuIn.value = p.revu_msi;
+    if (!ocrIn.value && p.ocr_msi) ocrIn.value = p.ocr_msi;
+    if (!bpxIn.value && p.bpx_profile) bpxIn.value = p.bpx_profile;
+
+    document.getElementById('navStep1').classList.toggle('done', !!appState.active_runner);
+    document.getElementById('navStep2').classList.toggle('done', !!appState.revu_installed);
+
+    document.getElementById('infoRunner').textContent = appState.active_runner ? appState.active_runner.name : 'None';
+    document.getElementById('infoInstalled').textContent = appState.revu_installed ? 'Installed' : 'Not Installed';
+    document.getElementById('infoPrefix').textContent = appState.config ? appState.config.prefix_dir : '—';
+    document.getElementById('infoExe').textContent = appState.revu_exe || 'Not found';
+    document.getElementById('btnLaunch').disabled = !appState.revu_installed;
+  }
+
+  function connectProgressSSE() {
+    if (activeSSE) activeSSE.close();
+    const box = document.getElementById('progressBox');
+    const logEl = document.getElementById('logConsole');
+    box.classList.add('visible');
+
+    activeSSE = new EventSource('/api/events');
+    activeSSE.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        document.getElementById('progressStage').textContent = data.stage || '';
+        document.getElementById('progressPct').textContent = (data.percent || 0) + '%';
+        document.getElementById('progressFill').style.width = (data.percent || 0) + '%';
+
+        if (data.stage) {
+          logEl.textContent += data.stage + '\n';
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        if (data.done) {
+          activeSSE.close();
+          activeSSE = null;
+          refreshState();
+        }
+      } catch (e) {}
+    };
+  }
+
+  async function selectRunner(name) {
+    if (!name) return;
+    await fetch('/api/select-runner', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name})
+    });
+    await refreshState();
+  }
+
+  async function downloadProton() {
+    document.getElementById('logConsole').textContent = '';
+    connectProgressSSE();
+    await fetch('/api/download-proton', {method: 'POST'});
+  }
+
+  async function installBluebeam() {
+    document.getElementById('logConsole').textContent = '';
+    connectProgressSSE();
+    const revu_msi = document.getElementById('revuMsiInput').value.trim();
+    const ocr_msi = document.getElementById('ocrMsiInput').value.trim();
+    const bpx_profile = document.getElementById('bpxInput').value.trim();
+    await fetch('/api/install-bluebeam', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revu_msi, ocr_msi, bpx_profile})
+    });
+  }
+
+  async function installPrereqs() {
+    document.getElementById('logConsole').textContent = '';
+    connectProgressSSE();
+    await fetch('/api/install-prereqs', {method: 'POST'});
+  }
+
+  async function repairPostInstall() {
+    document.getElementById('logConsole').textContent = '';
+    connectProgressSSE();
+    const bpx_profile = document.getElementById('bpxInput').value.trim();
+    await fetch('/api/repair-postinstall', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bpx_profile})
+    });
+  }
+
+  async function launchBluebeam() {
+    const res = await fetch('/api/launch', {method: 'POST'});
+    const data = await res.json();
+    if (data.error) alert('Launch error: ' + data.error);
+  }
+
+  async function createShortcut() {
+    const res = await fetch('/api/shortcut', {method: 'POST'});
+    const data = await res.json();
+    if (data.error) {
+      alert('Error: ' + data.error);
+    } else {
+      alert('Desktop shortcut created! You can now launch Bluebeam Revu 21 from your Linux application menu.');
+      refreshState();
+    }
+  }
+
+  async function openWinecfg() {
+    await fetch('/api/winecfg', {method: 'POST'});
+  }
+
+  async function killWine() {
+    await fetch('/api/kill', {method: 'POST'});
+    alert('Stopped all Wine processes in prefix.');
+  }
+
+  async function resetPrefix() {
+    if (!confirm('Are you sure you want to delete the Wine prefix and reset Bluebeam Revu 21?')) return;
+    await fetch('/api/reset-prefix', {method: 'POST'});
+    await refreshState();
+    showStep(2);
+  }
+
+  window.addEventListener('DOMContentLoaded', async () => {
+    await refreshState();
+    if (appState.revu_installed) {
+      showStep(3);
+    } else if (appState.active_runner) {
+      showStep(2);
+    } else {
+      showStep(1);
+    }
+  });
+</script>
+</body>
+</html>
